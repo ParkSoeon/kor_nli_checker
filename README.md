@@ -7,4 +7,4 @@ Research for building model, specialized for Korean NLI Task <br>
 
 ## 2. Checker
 
-Will be Updated...
+Will be Updated...🥹
