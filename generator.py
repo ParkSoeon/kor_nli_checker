@@ -74,7 +74,7 @@ def get_parse():
     parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation steps.")
     parser.add_argument("--save_total_limit", type=int, default=2, help="Save total limit.")
     parser.add_argument("--fp16", action="store_true", help="Use fp16 training.")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps.")
 
     # LoRA arguments
     parser.add_argument("--use_lora", action="store_true", help="Use LoRA for efficient fine-tuning.")
@@ -92,7 +92,8 @@ def get_parse():
     parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling.")
     parser.add_argument("--top_p", type=float, default=0.95, help="Top-p sampling.")
     parser.add_argument("--repetition_penalty", type=float, default=1.1, help="Repetition penalty.")
-    parser.add_argument("--do_sample", action="store_false", help="Enable sampling for generation.")
+    parser.add_argument("--do_sample", action="store_true", help="Enable sampling for generation.")
+    parser.add_argument("--num_beams", type=int, default=1, help="Number of beams for beam search (1 for greedy decoding).")
     
     # Few-shot arguments
     parser.add_argument("--num_fewshot", type=int, default=3, help="Number of few-shot examples.")
@@ -125,6 +126,7 @@ class CustomCallback(TrainerCallback):
         self.best_rouge_score = 0.0
         self.best_checkpoint = None
         self.eval_results = []
+
 
     def on_evaluate(self, args, state, control, **kwargs):
         print_log("Starting evaluation...")
@@ -166,7 +168,7 @@ class CustomCallback(TrainerCallback):
                     attention_mask=attention_mask,
                     max_new_tokens=self.args.max_new_tokens,
                     temperature=0.7,
-                    do_sample=False,
+                    do_sample=self.args.do_sample,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
@@ -202,9 +204,6 @@ class CustomCallback(TrainerCallback):
             "eval_combined_score": combined_score,
             "eval_step": state.global_step
         }
-        
-        if self.args.wandb_project:
-            wandb.log(eval_results)
         
         if combined_score > self.best_rouge_score:
             self.best_rouge_score = combined_score
@@ -251,9 +250,9 @@ class CustomCallback(TrainerCallback):
         with open(eval_file, 'w', encoding='utf-8') as f:
             json.dump(eval_results, f, ensure_ascii=False, indent=2)
         
-        if self.args.wandb_project:
-            final_results = {f"final_{k}": v for k, v in eval_results.items()}
-            wandb.log(final_results)
+        # if self.args.wandb_project:
+        #     final_results = {f"final_{k}": v for k, v in eval_results.items()}
+        #     wandb.log(final_results)
         
         print_log("Final Evaluation Results:")
         for key, value in eval_results.items():
@@ -307,6 +306,7 @@ class CustomCallback(TrainerCallback):
                         top_p=self.args.top_p if self.args.do_sample else None,
                         repetition_penalty=self.args.repetition_penalty,
                         do_sample=self.args.do_sample,
+                        num_beams=self.args.num_beams if not self.args.do_sample else 1,
                         pad_token_id=tokenizer.pad_token_id,
                         eos_token_id=tokenizer.eos_token_id,
                     )
@@ -478,7 +478,7 @@ def train_model(args):
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
-        report_to="wandb" if args.wandb_project else "none",
+        report_to="wandb",
         dataloader_pin_memory=False,  # For dynamic padding
     )
     
@@ -549,7 +549,7 @@ def main():
     run_name = f"{model_id}_{timestamp}"
 
     # Initialize wandb
-    if args.wandb_project and args.mode in ["train", "train_and_test"]:
+    if args.mode in ["train", "train_and_test"]:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
