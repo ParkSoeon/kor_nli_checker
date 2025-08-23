@@ -427,13 +427,18 @@ class EntailmentDataset(Dataset):
         if self.use_chat_template:
             messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요."}]
 
-            for ex in examples:
-                user_message = f"[전제] {ex['premise']}\n[가설] {ex['proposition']}\n[관계] {ex['label']}"
-                assistant_message = f"{ex['explanation']}"
-                messages.extend([
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": assistant_message}
-                ])
+            if examples:
+                example_content = "다음은 자연어 추론 과제의 예시입니다:\n\n"
+                for i, ex in enumerate(examples, 1):
+                    example_content += f"[예시 {i}]\n"
+                    example_content += f"[전제] {ex['premise']}\n" 
+                    example_content += f"[가설] {ex['proposition']}\n"
+                    example_content += f"[관계] {ex['label']}\n"
+                    example_content += f"[설명] {ex['explanation']}\n\n"
+
+                example_content += "이제 새로운 전제와 가설에 대해 관계를 분석하여 설명문을 설명하세요.\n\n"
+                messages.append({"role": "user", "content": example_content})
+                # messages.append({"role": "assistant", "content": ""}) # 여기에 추가적인 말을 넣는게 좋을까.. 조금 더 고민해볼 필요가 있다 생각
 
             current_message = f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
             messages.append({"role": "user", "content": current_message})
@@ -472,94 +477,129 @@ class EntailmentDataset(Dataset):
             
             if self.mode == "train":
                 # Add target as assistant response
-                messages.append({"role": "assistant", "content": output})
+                full_message = messages+[{"role": "assistant", "content": output}]
                 
-                # apply_chat_template 적용
-                full_text = self.tokenizer.apply_chat_template(
-                    messages, 
-                    tokenize=False
-                )
-                
-                if full_text.startswith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"):
-                    full_text = full_text.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
+                # # apply_chat_template 적용
+                # full_text = self.tokenizer.apply_chat_template(
+                #     messages, 
+                #     tokenize=False,
+                # )
             
+                # apply_chat_template 적용
+                full_text_list = self.tokenizer.apply_chat_template(
+                    full_message,
+                    tokenize=False,
+                    add_generation_prompt=False
+                )
+
+                if full_text_list.startswith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"):
+                    full_text_list = full_text_list.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
+            
+                full_text = self.tokenizer(
+                    full_text_list, 
+                    # tokenize=True,
+                    return_tensors="pt",
+                    # return_tensors=None, # Not convert to tensors yet -> since we need Attention mask too
+                    truncation=True,
+                    max_length=self.max_input_length + self.max_output_length,
+                    add_special_tokens=False
+                )
+
+                prefix_list = self.tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=False
+                )
+
+                prefix = self.tokenizer(
+                    prefix_list,
+                    # tokenize=True,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=self.max_input_length,
+                    add_special_tokens=False
+                )
+
+                # print(f"Shape of full_text['input_ids']: {full_text['input_ids'].shape}")
+                
+                # print(full_text.shape()) # (1, L)
+                # print(f"Full text shape: {full_text[0].shape}")
+                # assert 0
+
+                # print(f"Input IDs shape: {input_ids.shape}")
+                # print(f"Input IDs: {input_ids.tolist()}")
+                # print(f"Full text shape: {full_text.shape}")
+                # assert 0
+                # # OK
+
+                input_ids = full_text["input_ids"].squeeze(0)  # (1, L) -> (L,)
+                attention_mask = full_text["attention_mask"].squeeze(0)
+                prefix_input_ids = prefix["input_ids"].squeeze(0)  # (1, L) -> (L,)
+
+                decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+                prefix_decoded = self.tokenizer.decode(prefix_input_ids, skip_special_tokens=False)
+
                 print_log(f"==== Example {idx} ====")
                 print_log(f"Premise: {premise}")
                 print_log(f"Proposition: {proposition}")
                 print_log(f"Label: {label}")
-
                 print_log(f"Target Output: {output}")
                 
                 print_log(f"Messages count: {len(messages)}")
-                print_log(f"Full text length: {len(full_text)}")
-                print_log(f"Full text preview:\n{full_text}...")
+                print_log(f"Full text length of 'chat_template' format: {len(full_message)}")
+                print_log(f"Full text with 'chat_template' format:\n{messages}")
+                print_log(f"Full text with Decoded format:\n{decoded}")
+                print_log(f"Input IDs: {input_ids.tolist()}")
 
-                encoding = self.tokenizer(
-                    full_text,
-                    truncation=True,
-                    max_length=self.max_input_length + self.max_output_length,
-                    padding=False,
-                    return_tensors="pt"
-                )
-
-                labels = encoding["input_ids"].clone()
-
-                # Calculate input length to mask properly
-                input_messages = messages[:-1]  # 마지막 assistant 메시지 제외
-                input_only = self.tokenizer.apply_chat_template(
-                    input_messages, 
-                    tokenize=False, 
-                    add_generation_prompt=True
-                )
-                
-                # 빈 시스템 헤더만 제거 (실제 내용이 있는 시스템 메시지는 보존)
-                if input_only.startswith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"):
-                    input_only = input_only.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
-                input_encoding = self.tokenizer(input_only, truncation=True, max_length=self.max_input_length)
-                input_len = len(input_encoding["input_ids"])
+                labels = input_ids.clone()
+                print(f"Shape of Labels: {labels.shape}")
+                prefix_len = len(prefix_input_ids)
+                print(f"Shape of Prefix Length: {prefix_len}")
 
                 # Mask input tokens
-                labels[0, :input_len] = -100 
+                labels[:prefix_len] = -100 
 
-                print_log(f"Input-only text length: {len(input_only)}")
-                print_log(f"Input-only preview:\n{input_only}...")
-                print_log(f"Input tokens length: {input_len}")
-                print_log(f"Total tokens length: {len(encoding['input_ids'][0])}")
-                print_log(f"Target tokens length: {len(encoding['input_ids'][0]) - input_len}")
-                print_log(f"Input IDs (first 10): {encoding['input_ids'][0, :10].tolist()}")
-                print_log(f"Input IDs (around boundary): {encoding['input_ids'][0, input_len-3:input_len+3].tolist()}")
-                print_log(f"Masked Labels (first 10): {labels[0, :10].tolist()}")
-                print_log(f"Masked Labels (around boundary): {labels[0, input_len-3:input_len+3].tolist()}")
+                # assert (input_ids[:prefix_len] == prefix["input_ids"][0]).all(), "Prefix mis-match"
+                num_masked_tokens = (labels == -100).sum().item()
+
+                # print_log(f"Input-only text length: {len(prefix)}")
+                # print_log(f"Input-only preview:\n{prefix}...")
+                print_log(f"Input tokens length: {prefix_len}")
+                print_log(f"Total tokens length: {len(full_text['input_ids'][0])}")
+                print_log(f"Target tokens length: {len(full_text['input_ids'][0]) - prefix_len}")
+                print_log(f"Input IDs (first 10): {full_text['input_ids'].tolist()}")
+                print_log(f"Masked Labels (first 10): {labels.tolist()}")
+                print_log(f"Masked Labels (length): {num_masked_tokens}")
                 print_log("="*80)
 
                 return {
-                    "input_ids": encoding["input_ids"].squeeze(),
-                    "attention_mask": encoding["attention_mask"].squeeze(),
+                    "input_ids": input_ids.squeeze(),
+                    "attention_mask": full_text["attention_mask"].squeeze(),
                     "labels": labels.squeeze(),
                 }
 
             else:  # inference/test mode
-                input_text = self.tokenizer.apply_chat_template(
+                inf_ft_list = self.tokenizer.apply_chat_template(
                     messages, 
                     tokenize=False, 
-                    add_generation_prompt=True
+                    add_generation_prompt=False
                 )
+
+                if inf_ft_list.startswith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"):
+                    inf_ft_list = inf_ft_list.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
                 
-                if input_text.startswith("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"):
-                    input_text = input_text.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
-                
+                inf_full_text = self.tokenizer(
+                    inf_ft_list,
+                    return_tensors="pt",
+                    truncation=True,
+                    max_length=self.max_input_length + self.max_output_length,
+                    add_special_tokens=False
+                )
+
                 # Log first few examples for debugging
                 if idx < 3:
                     print_log(f"Inference example {idx}:")
                     print_log(f"Input prompt:\n{input_text}...")
-                
-                input_encoding = self.tokenizer(
-                    input_text,
-                    truncation=True,
-                    max_length=self.max_input_length,
-                    padding=False,
-                    return_tensors="pt"
-                )
 
                 return {
                     "input_ids": input_encoding["input_ids"].squeeze(),
@@ -572,60 +612,8 @@ class EntailmentDataset(Dataset):
                     "label": label
                 }
         else:
-            # Non-chat template mode
-            input_prompt = self.create_fewshot_prompt(premise, proposition, label)
-            
-            if self.mode == "train":
-                full_text = f"{input_prompt} {output}"
-                
-                if idx < 3:
-                    print_log(f"Training example {idx} (non-chat):")
-                    print_log(f"Full text: {full_text}...")
-                
-                encoding = self.tokenizer(
-                    full_text,
-                    truncation=True,
-                    max_length=self.max_input_length + self.max_output_length,
-                    padding=False,
-                    return_tensors="pt"
-                )
-                
-                labels = encoding['input_ids'].clone()
-                
-                # Mask input part
-                input_encoding = self.tokenizer(input_prompt, truncation=True, max_length=self.max_input_length)
-                input_len = len(input_encoding['input_ids'])
-                labels[0, :input_len] = -100
-                
-                return {
-                    "input_ids": encoding['input_ids'].squeeze(),
-                    "attention_mask": encoding['attention_mask'].squeeze(),
-                    "labels": labels.squeeze()
-                }
-            else:
-                # For inference
-                if idx < 3:
-                    print_log(f"Inference example {idx} (non-chat):")
-                    print_log(f"Input prompt: {input_prompt}...")
-                
-                input_encoding = self.tokenizer(
-                    input_prompt,
-                    truncation=True,
-                    max_length=self.max_input_length,
-                    padding=False,
-                    return_tensors="pt"
-                )
-                
-                return {
-                    "input_ids": input_encoding['input_ids'].squeeze(),
-                    "attention_mask": input_encoding['attention_mask'].squeeze(),
-                    "target": output,
-                    "id": item.get('id', idx),
-                    "prompt": input_prompt,
-                    "premise": premise,
-                    "proposition": proposition,
-                    "label": label
-                }
+            print("[ERROR] Not Set as Chat Template Mode. Please check the configuration.")
+            assert 0
                 
 def set_seed(seed: int = 42):
     random.seed(seed)
@@ -695,7 +683,7 @@ def load_model_and_tokenizer(args):
         print_log("LoRA applied successfully")
 
     return model, tokenizer
-    
+
 def prepare_fewshot_examples(train_path, seed, num_examples=3):
     print_log(f"Preparing few-shot examples from {train_path}")
     with open(train_path, 'r', encoding='utf-8') as f:
@@ -714,10 +702,10 @@ def prepare_fewshot_examples(train_path, seed, num_examples=3):
     if selected_examples:
         first_ex = selected_examples[0]
         print_log("First few-shot example:")
-        print_log(f"  Premise: {first_ex['input']['premise']}...")
-        print_log(f"  Proposition: {first_ex['input']['proposition']}...")
+        print_log(f"  Premise: {first_ex['input']['premise']}")
+        print_log(f"  Proposition: {first_ex['input']['proposition']}")
         print_log(f"  Label: {first_ex['input']['label']}")
-        print_log(f"  Output: {first_ex['output']}...")
+        print_log(f"  Output: {first_ex['output']}")
     
     return selected_examples
 
