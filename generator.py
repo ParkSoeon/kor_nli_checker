@@ -352,21 +352,29 @@ class CustomCallback(TrainerCallback):
                     if isinstance(value, list) and len(value) > 0:
                         return value[0]
                     elif isinstance(value, torch.Tensor):
-                        return value.item() if value.numel() == 1 else str(value)
-                    else:
-                        return str(value) if value is not None else (default_value if batch_index is None else f"{default_value}_{batch_index}")
-            
-                if 'input' in data:
-                    input_data = data['input']
-                    if isinstance(input_data, list) and len(input_data) > 0:
-                        input_data = input_data[0]
+                        if value.numel() == 1: 
+                            return value.item()
+                        return str(value[0])
+                    return str(value) if value is not None else default_value
 
-                    if isinstance(input_data, dict) and key in input_data:
-                        value = input_data[key]
-                        if isinstance(value, list) and len(value) > 0:
-                            return value[0]
-                        else:
-                            return str(value) if value is not None else default_value
+                return default_value 
+
+                    # elif isinstance(value, torch.Tensor):
+                    #     return value.item() if value.numel() == 1 else str(value)
+                    # else:
+                    #     return str(value) if value is not None else (default_value if batch_index is None else f"{default_value}_{batch_index}")
+            
+                # if 'input' in data:
+                #     input_data = data['input']
+                #     if isinstance(input_data, list) and len(input_data) > 0:
+                #         input_data = input_data[0]
+
+                #     if isinstance(input_data, dict) and key in input_data:
+                #         value = input_data[key]
+                #         if isinstance(value, list) and len(value) > 0:
+                #             return value[0]
+                #         else:
+                #             return str(value) if value is not None else default_value
 
             # Extract other information from batch
             example_id = extract_keys(batch_data, 'id', 'example', batch_index)
@@ -404,7 +412,7 @@ class CustomCallback(TrainerCallback):
                 print_log(f"  Proposition: {proposition}")
                 print_log(f"  Label: {label}")
                 for i, candidate in enumerate(candidates[:3]):
-                    print_log(f"  Candidate {i + 1}: {candidate}...")
+                    print_log(f"  Candidate {i + 1}: {candidate}")
         
         print_log(f"Generated {len(results)} results")
         return results
@@ -666,8 +674,9 @@ def main():
         )
         
         # Create dummy callback for inference
-        callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
-        results = callback.generate_candidates(model, tokenizer, test_dataset)
+        callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples) 
+        # results = callback.generate_candidates(model, tokenizer, test_dataset)
+        results = callback.generate_candidates_optimized(model, tokenizer, test_dataset)
         eval_results = callback.evaluate_results(results)
         
         # Save results
