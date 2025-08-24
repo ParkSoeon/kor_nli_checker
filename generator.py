@@ -17,7 +17,8 @@ from transformers import (
     AutoModelForSeq2SeqLM, 
     TrainingArguments, 
     Trainer, 
-    TrainerCallback
+    TrainerCallback,
+    EarlyStoppingCallback
 )
 
 from peft import (
@@ -127,7 +128,6 @@ class CustomCallback(TrainerCallback):
         self.best_checkpoint = None
         self.eval_results = []
 
-
     def on_evaluate(self, args, state, control, **kwargs):
         print_log("Starting evaluation...")
 
@@ -153,7 +153,7 @@ class CustomCallback(TrainerCallback):
         eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(10, len(eval_dataset_for_eval))))
         eval_dataloader = DataLoader(eval_subset, batch_size=1, shuffle=False)
 
-        for batch_idx, batch_data in enumerate(eval_dataloader):
+        for batch_index, batch_data in enumerate(eval_dataloader):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
             target = batch_data['target'][0] if isinstance(batch_data['target'], list) else batch_data['target']
@@ -228,14 +228,18 @@ class CustomCallback(TrainerCallback):
             if self.args.use_lora:
                 model = PeftModel.from_pretrained(model, self.best_checkpoint)
             else:
-                model.load_state_dict(torch.load(os.path.join(self.best_checkpoint, "pytorch_model.bin")))
-        
+                checkpoint_dir = os.path.join(self.best_checkpoint, "adapter_model.bin")
+                if os.path.exists(checkpoint_dir):
+                    model.load_state_dict(torch.load(checkpoint_dir, map_location=model.device))
+                else:
+                    print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
+
         test_dataset = EntailmentDataset(
             self.args.test_path, tokenizer, self.args.max_input_length, self.args.max_output_length,
             self.args.model_type, "test", self.args.use_chat_template, self.fewshot_examples, self.args.num_fewshot
         )
 
-        results = self.generate_candidates(model, tokenizer, test_dataset)
+        results = self.generate_candidates_optimized(model, tokenizer, test_dataset)
         
         timestamp = get_timestamp()
         model_id = get_model_id_from_path(self.args.model_name)
@@ -263,8 +267,64 @@ class CustomCallback(TrainerCallback):
         
         return results, eval_results
     
-    def generate_candidates(self, model, tokenizer, test_dataset):
-        print_log("Generating candidates...")
+    def generate_candidates(self, model, tokenizer, input_ids, attention_mask):
+
+        candidates = []
+
+        # The First candidate(Build the first Cache)
+        with torch.no_grad():
+            outputs = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.args.max_new_tokens,
+                temperature=self.args.temperature if self.args.do_sample else None,
+                top_k=self.args.top_k if self.args.do_sample else None,
+                top_p=self.args.top_p if self.args.do_sample else None,
+                repetition_penalty=self.args.repetition_penalty,
+                do_sample=self.args.do_sample,
+                num_beams=self.args.num_beams if not self.args.do_sample else 1,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=True,
+                return_dict_in_generate=True,
+                output_scores=True if self.args.do_sample else False
+            )
+            
+            if hasattr(outputs, 'sequences'):
+                generated_ids = outputs.sequences[0][input_ids.size(1):]
+            else: 
+                generated_ids = outputs[0][input_ids.size(1):]
+
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            candidates.append(generated_text)
+
+            # Add Additional Candidates 
+            for _ in range(self.args.num_cands - 1):
+                temp_variation = self.args.temperature * (0.8 + 0.4 * torch.rand(1).item())
+
+                additional_outputs = model.generate(
+                    input_ids =input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=self.args.max_new_tokens,
+                    temperature=temp_variation if self.args.do_sample else None,
+                    top_k=self.args.top_k if self.args.do_sample else None,
+                    top_p=self.args.top_p if self.args.do_sample else None,
+                    repetition_penalty=self.args.repetition_penalty,
+                    do_sample=True, # Force to ...
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    use_cache=True,
+                )
+
+                generated_ids = additional_outputs[0][input_ids.size(1):]
+                generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                candidates.append(generated_text)
+
+            return candidates
+
+    def generate_candidates_optimized(self, model, tokenizer, test_dataset):
+
+        print_log("Generating candidates with Cache Optimization...")
         model.eval()
         results = []
         
@@ -282,90 +342,107 @@ class CustomCallback(TrainerCallback):
             collate_fn=data_collator
         )
         
-        for batch_idx, batch_data in enumerate(tqdm(dataloader, desc="Generating")):
+        for batch_index, batch_data in enumerate(tqdm(dataloader, desc="Generating")):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
+
+            def extract_keys(data, key, default_value, batch_index=None):
+                if key in data:
+                    value = data[key]
+                    if isinstance(value, list) and len(value) > 0:
+                        return value[0]
+                    elif isinstance(value, torch.Tensor):
+                        return value.item() if value.numel() == 1 else str(value)
+                    else:
+                        return str(value) if value is not None else (default_value if batch_index is None else f"{default_value}_{batch_index}")
             
+                if 'input' in data:
+                    input_data = data['input']
+                    if isinstance(input_data, list) and len(input_data) > 0:
+                        input_data = input_data[0]
+
+                    if isinstance(input_data, dict) and key in input_data:
+                        value = input_data[key]
+                        if isinstance(value, list) and len(value) > 0:
+                            return value[0]
+                        else:
+                            return str(value) if value is not None else default_value
+
             # Extract other information from batch
-            target = batch_data['target'][0] if isinstance(batch_data['target'], list) else batch_data['target']
-            example_id = batch_data['id'][0] if isinstance(batch_data['id'], list) else batch_data['id']
-            prompt = batch_data['prompt'][0] if isinstance(batch_data['prompt'], list) else batch_data['prompt']
-            premise = batch_data['premise'][0] if isinstance(batch_data['premise'], list) else batch_data['premise']
-            proposition = batch_data['proposition'][0] if isinstance(batch_data['proposition'], list) else batch_data['proposition']
-            label = batch_data['label'][0] if isinstance(batch_data['label'], list) else batch_data['label']
-            
-            candidates = []
-            with torch.no_grad():
-                for _ in range(self.args.num_cands):
-                    outputs = model.generate(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        max_new_tokens=self.args.max_new_tokens,
-                        temperature=self.args.temperature if self.args.do_sample else None,
-                        top_k=self.args.top_k if self.args.do_sample else None,
-                        top_p=self.args.top_p if self.args.do_sample else None,
-                        repetition_penalty=self.args.repetition_penalty,
-                        do_sample=self.args.do_sample,
-                        num_beams=self.args.num_beams if not self.args.do_sample else 1,
-                        pad_token_id=tokenizer.pad_token_id,
-                        eos_token_id=tokenizer.eos_token_id,
-                    )
-                    
-                    generated_ids = outputs[0][input_ids.size(1):]
-                    generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-                    candidates.append(generated_text)
+            example_id = extract_keys(batch_data, 'id', 'example', batch_index)
+            premise = extract_keys(batch_data, 'premise', '')
+            proposition = extract_keys(batch_data, 'proposition', '')
+            label = extract_keys(batch_data, 'label', '')
+
+            print_log(f"Processing Example {batch_index + 1}:")
+            print_log(f"[Extracted]  ID: {example_id}")
+            print_log(f"[Extracted]  Premise: {premise}")
+            print_log(f"[Extracted]  Proposition: {proposition}")
+            print_log(f"[Extracted]  Label: {label}")
+
+            candidates = self.generate_candidates(model, tokenizer, input_ids, attention_mask)
+
+            # if len(candidates) > 1 and target:
+            #     candidates = self.rank_candidates(candidates, target)
+
+            best_candidate = ""
             
             result = {
                 "id": example_id,
                 "premise": premise,
                 "proposition": proposition,
                 "label": label,
-                "prompt": prompt,
-                "target": target,
                 "candidates": candidates,
-                "best_candidate": candidates[0] if candidates else ""
+                "best_candidate": best_candidate # Log the best candidate with the highest PPL score(need to be modified)
             }
             results.append(result)
 
             # Log first few examples for debugging
-            if batch_idx < 5:
-                print_log(f"Example {batch_idx + 1}:")
-                print_log(f"  Premise: {premise}...")
-                print_log(f"  Proposition: {proposition}...")
+            if batch_index < 5:
+                print_log(f"Example {batch_index + 1}:")
+                print_log(f"  Premise: {premise}")
+                print_log(f"  Proposition: {proposition}")
                 print_log(f"  Label: {label}")
-                print_log(f"  Target: {target}...")
-                print_log(f"  Generated: {candidates[0]}...")
+                for i, candidate in enumerate(candidates[:3]):
+                    print_log(f"  Candidate {i + 1}: {candidate}...")
         
         print_log(f"Generated {len(results)} results")
         return results
     
-    def evaluate_results(self, results):
-        print_log("Evaluating results...")
+    # # Test Dataset doesn't have Target(GT) -> Cannot use this function only with ROUGE(need to modify)
+    # def rank_candidates(self, candidates, target):
+    #     if not target or len(candidates) <= 1:
+    #         return candidates
+
+    #     scores = []
+
+    #     for candidate in candidates:
+    #         rouge_result = self.rouge_metric.compute(
+    #             predictions=[candidate],
+    #             # references=[target],
+    #             use_stemmer=False # Train, Evaluate and Inference are all done with Korean Data
+    #         )
+
+    #         score = (
+    #             # rouge_result['rouge1'] * 0.5 +
+    #             # rouge_result['rouge2'] * 0.3 +
+    #             # rouge_result['rougeL'] * 0.2
+    #         )
+
+    #         scores.append((score, candidate))
+
+    #     scores.sort(key=lambda x: x[0], reverse=True)
+    #     ranked_candidates = [candidate for score, candidate in scores]
+
+    #     return ranked_candidates
+            
+    # def evaluate_results(self, results):
+    #     print_log("Evaluating results...")
         
-        targets = [result['target'] for result in results]
-        predictions = [result['best_candidate'] for result in results]
-        
-        rouge_results = self.rouge_metric.compute(
-            predictions=predictions,
-            references=targets,
-        )
-        
-        combined_score = (
-            rouge_results['rouge1'] * self.args.rouge1_weight +
-            rouge_results['rouge2'] * self.args.rouge2_weight +
-            rouge_results['rougeL'] * self.args.rougeL_weight
-        )
-        
-        eval_results = {
-            "rouge1": rouge_results['rouge1'],
-            "rouge2": rouge_results['rouge2'],
-            "rougeL": rouge_results['rougeL'],
-            "combined_rouge_score": combined_score,
-            "num_examples": len(results),
-            "num_candidates_per_example": self.args.num_cands
-        }
-        
-        return eval_results
+    #     predictions = [result['candidates'][0] for result in results]
+    #     # Evaluate with PPL (Need to Select a Model to Calculate...)
+
+    #     return eval_results
 
 def set_seed(seed: int = 42):
     random.seed(seed)
@@ -475,6 +552,7 @@ def train_model(args):
         eval_strategy="steps",
         save_total_limit=args.save_total_limit,
         load_best_model_at_end=False,
+        metric_for_best_model="eval_loss",
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
@@ -492,7 +570,7 @@ def train_model(args):
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
-        callbacks=[rouge_callback],
+        callbacks=[rouge_callback, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
     )
     
     print_log("Starting training...")
