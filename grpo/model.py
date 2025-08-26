@@ -4,7 +4,6 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from  peft import LoraConfig, get_peft_model, TaskType
 import copy
-from trl import GRPOConfig, GRPOTrainer
 
 def load_model_and_tokenizer(self, model_name, device='cuda'):
     tokenizer = AutoTokenizer.from_pretrained(model_name)
