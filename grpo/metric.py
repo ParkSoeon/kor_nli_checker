@@ -1,11 +1,12 @@
-# ./reward.py
+# ./metrics.py
 
 import numpy as np
 from evaluate import load
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import torch
+from typing import List
 
-def compute_interactive_bleu(sentence_a, sentence_b):
+def compute_interactive_bleu(sentence_a: List[str], sentence_b: List[str]) -> float:
     smoothing_function = SmoothingFunction().method1
 
     total_bleu = 0.0
@@ -23,23 +24,23 @@ def compute_interactive_bleu(sentence_a, sentence_b):
 
     return total_bleu / pair_count if pair_count > 0 else 0.0
 
-def compute_rouge(generated, references, rouge_types=["rouge1", "rouge2", "rougeL"]):
+def compute_rouge(generated: str, references: str, rouge_types: List[str] = ["rouge1", "rouge2", "rougeL"]) -> Dict[str, float]:
 
     scorer = load("rouge")
     scores = scorer.compute(predictions=[generated], references=[references], rouge_types=rouge_types)
 
     return {
-        "rouge1": scores["rouge1"]["f1"],
-        "rouge2": scores["rouge2"]["f1"],
-        "rougeL": scores["rougeL"]["f1"],
-        # "combined": alpha * scores["rouge1"]["f1"] + beta * scores["rouge2"]["f1"] + gamma * scores["rougeL"]["f1"]
-        # "combined": alpha * scores["rouge1"] + beta * scores["rouge2"] + gamma * scores["rougeL"]
+        "rouge1": scores["rouge1"],
+        "rouge2": scores["rouge2"],
+        "rougeL": scores["rougeL"],
+        # "combined": lambda1 * scores["rouge1"]["f1"] + lambda2 * scores["rouge2"]["f1"] + lambda3 * scores["rougeL"]["f1"]
+        # "combined": lambda1 * scores["rouge1"] + lambda2 * scores["rouge2"] + lambda3 * scores["rougeL"]
     }
 
-def compute_perplexity(model, tokenizer, texts, device):
+def compute_perplexity(model, tokenizer, text: str, device) -> float:
     model.eval()
     with torch.no_grad():
-        inputs = tokenizer(texts, return_tensors='pt', padding=True, truncation=True)
+        inputs = tokenizer(text, return_tensors='pt', padding=True, truncation=True, max_length=512)
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
         outputs = model(**inputs, labels=inputs['input_ids'])
@@ -49,18 +50,18 @@ def compute_perplexity(model, tokenizer, texts, device):
 
     return perplexity.item()
 
-def compute_adapter_a_reward(generated, references, alpha=0.0, beta=0.0, gamma=0.0):
+def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: flaot = 0.0, lambda3: float = 0.0):
     rouge_scores = compute_rouge(generated, references)
 
     reward_a = (
-        alpha * rouge_scores["rouge1"] + 
-        beta * rouge_scores["rouge2"] + 
-        gamma * rouge_scores["rougeL"]
+        lambda1 * rouge_scores["rouge1"] + 
+        lambda2 * rouge_scores["rouge2"] + 
+        lambda3 * rouge_scores["rougeL"]
     )
 
     return reward_a
 
-def compute_adapter_b_reward(generated, references, adapter_a_cands, model=None, tokenizer=None, alpha=0.0, beta=0.0, gamma=0.0):
+def compute_adapter_b_reward(generated: str, references: str, adapter_a_cands: List[str], model=None, tokenizer=None, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
 
     interactive_bleu = compute_interactive_bleu([generated], adapter_a_cands)
 
@@ -73,9 +74,9 @@ def compute_adapter_b_reward(generated, references, adapter_a_cands, model=None,
         ppl_penalty = -np.log(ppl) # Lower Perplexity == Higher Reward
 
     reward_b = (
-        - alpha * interactive_bleu + 
-        beta * rouge_l -
-        gamma * ppl_penalty
+        -lambda1 * interactive_bleu + 
+        lambda2 * rouge_l +
+        -lambda3 * ppl_penalty
     )
 
     return reward_b
