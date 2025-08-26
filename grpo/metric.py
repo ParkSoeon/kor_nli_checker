@@ -1,3 +1,5 @@
+# ./reward.py
+
 import numpy as np
 from evaluate import load
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
@@ -14,9 +16,7 @@ def compute_interactive_bleu(sentence_a, sentence_b):
             tokens_a = a.split()
             tokens_b = b.split()
 
-            bleu = sentence_bleu(
-                [tokens_a], tokens_b, smoothing_function=smoothing_function
-            )
+            bleu = sentence_bleu([tokens_a], tokens_b, smoothing_function=smoothing_function)
             
             total_bleu += bleu
             pair_count += 1
