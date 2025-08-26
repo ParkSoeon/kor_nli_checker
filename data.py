@@ -12,13 +12,13 @@ def print_log(message):
 
 class EntailmentDataset(Dataset):
     def __init__(self, data_path, tokenizer, max_input_length=1024, max_output_length=256, 
-                 model_type="causal", mode="train_and_test", use_chat_template=True, 
+                 model_type="causal", is_training=True, use_chat_template=True, 
                  fewshot_examples=None, num_fewshot=1):
         self.tokenizer = tokenizer
         self.max_input_length = max_input_length
         self.max_output_length = max_output_length
         self.model_type = model_type
-        self.mode = mode
+        self.is_training = is_training
         self.use_chat_template = use_chat_template
         self.fewshot_examples = fewshot_examples if fewshot_examples else []
         self.num_fewshot = num_fewshot
@@ -29,6 +29,16 @@ class EntailmentDataset(Dataset):
         print_log(f"Loaded {len(self.data)} examples from {data_path}")
         print_log(f"Using {self.num_fewshot} few-shot examples per batch")
         print_log(f"Chat Template Mode: {self.use_chat_template}")
+
+    def clean_text_tokens(self, text):
+        text = text.replace('<|end_of_text|>', '')
+        
+        # 중복된 시스템 헤더 제거
+        empty_system_content = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"
+        if text.startswith(empty_system_content):
+            text = text.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
+        
+        return text
 
     def create_fewshot_prompt(self, premise, proposition, label):
         examples = []
@@ -47,12 +57,12 @@ class EntailmentDataset(Dataset):
             })
 
         if self.use_chat_template:
-            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요."}]
+            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.\n답변은 [설명] {output} 형식으로 작성하세요.\n설명문에 포함되는 '함의', '모순' 관계는 한국어로 작성하세요."}]
 
             if examples: 
                 example_content = "다음은 자연어 추론 과제의 예시입니다:\n\n"
                 for i, ex in enumerate(examples, 1):
-                    example_content += f"[예시 {i}:]\n"
+                    example_content += f"[예시 {i}]\n"
                     example_content += f"[전제] {ex['premise']}\n"
                     example_content += f"[가설] {ex['proposition']}\n"
                     example_content += f"[관계] {ex['label']}\n"
@@ -97,33 +107,15 @@ class EntailmentDataset(Dataset):
         if self.use_chat_template:
             messages = self.create_fewshot_prompt(premise, proposition, label)
 
-            if self.mode == "train":
-                full_messages = messages + [{"role": "assistant", "content": output}]
-
-                full_text_list = self.tokenizer.apply_chat_template(
-                    full_messages,
-                    tokenize=False,
-                    add_generation_prompt=False
-                )
-
-                # Fix potential duplicate system headers
-                empty_system_content = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"
-                if full_text_list.startswith(empty_system_content):
-                    full_text_list = full_text_list.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
-
-                full_text = self.tokenizer(
-                    full_text_list,
-                    truncation=True,
-                    return_tensors="pt",
-                    max_length=self.max_input_length + self.max_output_length,
-                    add_special_tokens=False
-                )
+            if self.is_training:
 
                 prefix_list = self.tokenizer.apply_chat_template(
                     messages,
                     tokenize=False,
                     add_generation_prompt=True
                 )
+
+                prefix_list = self.clean_text_tokens(prefix_list)
 
                 prefix = self.tokenizer(
                     prefix_list,
@@ -133,8 +125,16 @@ class EntailmentDataset(Dataset):
                     add_special_tokens=False
                 )
 
-                input_ids = full_text["input_ids"].squeeze(0) # (1, L) -> (L,)
-                attention_mask = full_text["attention_mask"].squeeze(0)
+                output_enc = self.tokenizer(
+                    output,
+                    truncation=True,
+                    return_tensors="pt",
+                    max_length=self.max_output_length,
+                    add_special_tokens=False
+                )
+
+                input_ids = torch.cat([prefix["input_ids"], output_enc["input_ids"]], dim=1).squeeze(0)
+                attention_mask = torch.cat([prefix["attention_mask"], output_enc["attention_mask"]], dim=1).squeeze(0)
                 prefix_input_ids = prefix["input_ids"].squeeze(0) # (1, L) -> (L,)
 
                 labels = input_ids.clone()
@@ -145,6 +145,11 @@ class EntailmentDataset(Dataset):
 
                 # Logging for Debugging
                 decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+                print_log(f"[DBG] Decoded total tokens (last 100 chars): {decoded[-100:]}")
+                print_log(f"[DBG] Prefix Decoded (last 100 chars): {self.tokenizer.decode(prefix_input_ids, skip_special_tokens=False)[-100:]}")
+                print_log(f"[DBG] Input IDs: {input_ids.tolist()}")
+                print_log(f"[DBG] Attention Mask: {attention_mask.tolist()}")
+                print_log(f"[DBG] Prefix Input IDs: {prefix_input_ids.tolist()}")
 
                 print_log(f"Premise: {premise}")
                 print_log(f"Proposition: {proposition}")
@@ -158,42 +163,52 @@ class EntailmentDataset(Dataset):
                 return {
                     "input_ids": input_ids,
                     "attention_mask": attention_mask,
-                    "labels": labels
+                    "labels": labels,
+                    "output": output
                 }
 
-            else: # Inference mode
+            else:
                 inf_ft_list = self.tokenizer.apply_chat_template(
                     messages,
                     tokenize=False,
                     add_generation_prompt=True
                 )
 
-                # Fix potential duplicate system headers
-                empty_system_content = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"
-                if inf_ft_list.startswith(empty_system_content):
-                    inf_ft_list = inf_ft_list.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
+                inf_ft_list = self.clean_text_tokens(inf_ft_list)
+
+                assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
+                if assistant_marker in inf_ft_list:
+                    marker_end = inf_ft_list.index(assistant_marker) + len(assistant_marker)
+                    inf_ft_list = inf_ft_list[:marker_end]
+
+                print_log(f"[DBG] Input sequence: {inf_ft_list}")
 
                 input_encoding = self.tokenizer(
                     inf_ft_list,
                     truncation=True,
                     return_tensors="pt",
                     max_length=self.max_input_length,
-                    add_special_tokens=False
+                    add_special_tokens=True,
                 )
 
-                # Log fire for debugging
-                print_log(f"==== Inference Example {idx} ====")
+                input_ids = input_encoding["input_ids"].squeeze(0)  # (1, L) -> (L,)
+                attention_mask = input_encoding["attention_mask"].squeeze(0)
+
+                # 디버깅 로그
+                decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
+                print_log(f"[DBG] Inference input IDs: {input_ids.tolist()}")
+                        
+                # Log for debugging
+                print_log(f"==== Inference Example {idx+1} ====")
                 print_log(f"Premise: {premise}")
                 print_log(f"Proposition: {proposition}")
                 print_log(f"Label: {label}")
                 print_log(f"Input prompt length: {len(input_encoding['input_ids'].squeeze())}")
 
                 return {
-                    "input_ids": input_encoding["input_ids"].squeeze(),
-                    "attention_mask": input_encoding["attention_mask"].squeeze(),
-                    "target": output,
-                    "id": item.get('id', idx),
-                    "prompt": inf_ft_list,
+                    "input_ids": input_ids,
+                    "attention_mask": attention_mask,
+                    "id": item.get('id'),
                     "premise": premise,
                     "proposition": proposition,
                     "label": label
@@ -256,18 +271,14 @@ class DynamicDataCollator:
             "attention_mask": torch.stack(padded_attention_masks)
         }
 
-        if "target" in features[0]:
-            result["target"] = [feature["target"] for feature in features]
         if "id" in features[0]:
-            result["ids"] = [feature["id"] for feature in features]
-        if "prompt" in features[0]:
-            result["prompts"] = [feature["prompt"] for feature in features]
+            result["id"] = [feature["id"] for feature in features]
         if "premise" in features[0]:
-            result["premises"] = [feature["premise"] for feature in features]
+            result["premise"] = [feature["premise"] for feature in features]
         if "proposition" in features[0]:    
-            result["propositions"] = [feature["proposition"] for feature in features]
+            result["proposition"] = [feature["proposition"] for feature in features]
         if "label" in features[0]:
-            result["labels"] = [feature["label"] for feature in features]
+            result["label"] = [feature["label"] for feature in features]
 
         return result
 
@@ -359,31 +370,52 @@ def create_datasets(args, tokenizer, fewshot_examples):
     
     train_dataset = EntailmentDataset(
         args.train_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, "train", args.use_chat_template, fewshot_examples, args.num_fewshot
+        args.model_type, is_training=True, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
     )
     
     eval_dataset = EntailmentDataset(
         args.dev_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, "train", args.use_chat_template, fewshot_examples, args.num_fewshot
+        args.model_type, is_training=True, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
     )
 
     test_dataset = EntailmentDataset(
         args.test_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, "test", args.use_chat_template, fewshot_examples, args.num_fewshot
+        args.model_type, is_training=False, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
     )
     
     print_log(f"Created datasets - Train: {len(train_dataset)}, Eval: {len(eval_dataset)}, Test: {len(test_dataset)}")
     
     return train_dataset, eval_dataset, test_dataset
 
-def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8):
+def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8, is_training=True):
     print_log(f"Creating dynamic data collator for {model_type} model")
-    
-    collator = DynamicDataCollator(
-        tokenizer=tokenizer,
-        model_type=model_type,
-        pad_to_multiple_of=pad_to_multiple_of
-    )
-    
+
+    if is_training:
+        return DataCollatorForSeq2Seq(
+            tokenizer=tokenizer,
+            model=None,
+            padding=True,
+            max_length=None,
+            pad_to_multiple_of=pad_to_multiple_of,
+            return_tensors="pt"
+        )
+
+    else:
+        def inference_collate_fn(batch):
+            item = batch[0]
+            
+            result = {}
+            for key, value in item.items():
+                if key in ['input_ids', 'attention_mask']:
+                    if isinstance(value, torch.Tensor):
+                        result[key] = value.unsqueeze(0)  # (seq_len,) -> (1, seq_len)
+                    else:
+                        result[key] = torch.tensor(value).unsqueeze(0)
+                else:
+                    result[key] = [value]
+            
+            return result
+        
+        return inference_collate_fn
+
     print_log("Dynamic data collator created successfully")
-    return collator
