@@ -42,7 +42,7 @@ def get_timestamp():
 
 def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [{prefix}] {message}")
+    print(f"[{timestamp}] {message}")
 
 def get_model_id_from_path(model_path):
     return model_path.split('/')[-1].replace('-', '_')
@@ -101,7 +101,8 @@ def get_parse():
     parser.add_argument("--fewshot_seed", type=int, default=42, help="Seed for few-shot example selection.")
     
     # General arguments
-    parser.add_argument("--mode", type=str, choices=["train", "inf", "test", "train_and_test"], default="train_and_test", help="Mode of operation.")
+    parser.add_argument("--train", action="store_true", help="Whether to run training.")
+    parser.add_argument("--test", action="store_true", help="Whether to run testing on the test set.")
     parser.add_argument("--wandb_project", type=str, default="2025HCLT", help="WandB project name.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--use_chat_template", action="store_true", default=True, help="Use chat template for formatting.")
@@ -143,7 +144,7 @@ class CustomCallback(TrainerCallback):
             max_input_length=self.args.max_input_length,
             max_output_length=self.args.max_output_length,
             model_type=self.args.model_type,
-            mode="test",  # Use test mode for evaluation
+            is_training=False, 
             use_chat_template=self.args.use_chat_template,
             fewshot_examples=self.fewshot_examples,
             num_fewshot=self.args.num_fewshot
@@ -156,11 +157,18 @@ class CustomCallback(TrainerCallback):
         for batch_index, batch_data in enumerate(eval_dataloader):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
-            target = batch_data['target'][0] if isinstance(batch_data['target'], list) else batch_data['target']
-            
+
+            targets = batch_data['output']
+            if not isinstance(targets, list):
+                targets = [targets]
+
+            # target = batch_data['output'][0] if isinstance(batch_data['output'], list) else batch_data['output']
+            # print_log(f"batch_data keys: {batch_data.keys()}") # batch_data keys: dict_keys(['input_ids', 'attention_mask', 'id', 'premise', 'proposition', 'label'])
+
             input_text = self.tokenizer.decode(input_ids.squeeze(), skip_special_tokens=False)
+
             print_log(f"Input text: {input_text}") 
-            print_log(f"Target: {target}")
+            print_log(f"Target: {targets}")
 
             with torch.no_grad():
                 outputs = model.generate(
@@ -173,14 +181,20 @@ class CustomCallback(TrainerCallback):
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
 
-            generated_ids = outputs[0][input_ids.size(1):]
-            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
-
-            print_log(f"Generated text: {generated_text}")
-            print_log("="*50)
-
-            predictions.append(generated_text)
-            references.append(target) 
+            batch_size = input_ids.size(0)
+            for i in range(batch_size):
+                input_length = input_ids.size(1)
+                generated_ids = outputs[i][input_length:]
+                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                
+                input_text = self.tokenizer.decode(input_ids[i], skip_special_tokens=False)
+                print_log(f"Sample {i} - Input text: {input_text}")
+                print_log(f"Sample {i} - Target: {targets[i] if i < len(targets) else 'N/A'}")
+                print_log(f"Sample {i} - Generated text: {generated_text}")
+                print_log("="*50)
+                
+                predictions.append(generated_text)
+                references.append(targets[i] if i < len(targets) else "")
         
         rouge_results = self.rouge_metric.compute(
             predictions=predictions,
@@ -234,10 +248,7 @@ class CustomCallback(TrainerCallback):
                 else:
                     print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
 
-        test_dataset = EntailmentDataset(
-            self.args.test_path, tokenizer, self.args.max_input_length, self.args.max_output_length,
-            self.args.model_type, "test", self.args.use_chat_template, self.fewshot_examples, self.args.num_fewshot
-        )
+        _, _, test_dataset = create_datasets(self.args, tokenizer, self.fewshot_examples)
 
         results = self.generate_candidates_optimized(model, tokenizer, test_dataset)
         
@@ -249,14 +260,6 @@ class CustomCallback(TrainerCallback):
             json.dump(results, f, ensure_ascii=False, indent=2)
         
         eval_results = self.evaluate_results(results)
-        
-        eval_file = os.path.join(output_dir, f"{model_id}_{timestamp}_final_evaluation.json")
-        with open(eval_file, 'w', encoding='utf-8') as f:
-            json.dump(eval_results, f, ensure_ascii=False, indent=2)
-        
-        # if self.args.wandb_project:
-        #     final_results = {f"final_{k}": v for k, v in eval_results.items()}
-        #     wandb.log(final_results)
         
         print_log("Final Evaluation Results:")
         for key, value in eval_results.items():
@@ -270,6 +273,19 @@ class CustomCallback(TrainerCallback):
     def generate_candidates(self, model, tokenizer, input_ids, attention_mask):
 
         candidates = []
+
+        print_log("Generating candidates...")
+        print_log(f"[DBG] Input IDs: {input_ids}")
+        print_log(f"[DBG] Attention Mask: {attention_mask}")
+        print_log(f"[DBG] Input IDs Shape: {input_ids.shape}")
+        print_log(f"[DBG] Attention Mask Shape: {attention_mask.shape}")
+        print_log(f"[DBG] input_ids device: {input_ids.device}")
+        print_log(f"[DBG] attention_mask device: {attention_mask.device}")
+        print_log(f"[DBG] Model device: {model.device}")
+
+        input_text = tokenizer.decode(input_ids.squeeze(), skip_special_tokens=False)
+        print_log(f"[DBG] Input text (first 200 chars): {input_text[:200]}...")
+        print_log(f"[DBG] Input text (last 100 chars): {input_text[-100:]}")
 
         # The First candidate(Build the first Cache)
         with torch.no_grad():
@@ -332,7 +348,8 @@ class CustomCallback(TrainerCallback):
         data_collator = create_data_collator(
             tokenizer, 
             self.args.model_type, 
-            self.args.pad_to_multiple_of
+            self.args.pad_to_multiple_of,
+            is_training=False
         )
         
         dataloader = DataLoader(
@@ -357,53 +374,51 @@ class CustomCallback(TrainerCallback):
                         return str(value[0])
                     return str(value) if value is not None else default_value
 
-                return default_value 
+                if 'input' in data:
+                    input_data = data['input']
+                    if isinstance(input_data, list) and len(input_data) > 0:
+                        input_data = input_data[0]
+                    
+                    if isinstance(input_data, dict) and key in input_data:
+                        value = input_data[key]
+                        if isinstance(value, list) and len(value) > 0:
+                            return value[0]
+                        else:
+                            return str(value) if value is not None else default_value
 
-                    # elif isinstance(value, torch.Tensor):
-                    #     return value.item() if value.numel() == 1 else str(value)
-                    # else:
-                    #     return str(value) if value is not None else (default_value if batch_index is None else f"{default_value}_{batch_index}")
-            
-                # if 'input' in data:
-                #     input_data = data['input']
-                #     if isinstance(input_data, list) and len(input_data) > 0:
-                #         input_data = input_data[0]
-
-                #     if isinstance(input_data, dict) and key in input_data:
-                #         value = input_data[key]
-                #         if isinstance(value, list) and len(value) > 0:
-                #             return value[0]
-                #         else:
-                #             return str(value) if value is not None else default_value
+                return default_value if batch_index is None else f"{default_value}_{batch_index}"
 
             # Extract other information from batch
-            example_id = extract_keys(batch_data, 'id', 'example', batch_index)
+            example_id = extract_keys(batch_data, 'id', '', batch_index)
             premise = extract_keys(batch_data, 'premise', '')
             proposition = extract_keys(batch_data, 'proposition', '')
             label = extract_keys(batch_data, 'label', '')
+            # target = extract_keys(batch_data, 'output', '')
 
-            print_log(f"Processing Example {batch_index + 1}:")
+            print_log(f"Processing Example {batch_index+1}:")
             print_log(f"[Extracted]  ID: {example_id}")
             print_log(f"[Extracted]  Premise: {premise}")
             print_log(f"[Extracted]  Proposition: {proposition}")
             print_log(f"[Extracted]  Label: {label}")
+            # print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
 
             candidates = self.generate_candidates(model, tokenizer, input_ids, attention_mask)
 
             # if len(candidates) > 1 and target:
             #     candidates = self.rank_candidates(candidates, target)
 
-            best_candidate = ""
-            
-            result = {
-                "id": example_id,
-                "premise": premise,
-                "proposition": proposition,
-                "label": label,
-                "candidates": candidates,
-                "best_candidate": best_candidate # Log the best candidate with the highest PPL score(need to be modified)
+            best_candidate = candidates[0] if candidates else ""
+
+            generated_result = {
+                "id": str(example_id) if example_id is not None else "",
+                "premise": str(premise) if premise is not None else "",
+                "proposition": str(proposition) if proposition is not None else "",
+                "label": str(label) if label is not None else "",
+                # "output": str(target) if target is not None else "",
+                "candidates": [str(candidate) for candidate in candidates],
+                "best_candidate": str(best_candidate)
             }
-            results.append(result)
+            results.append(generated_result)
 
             # Log first few examples for debugging
             if batch_index < 5:
@@ -416,42 +431,35 @@ class CustomCallback(TrainerCallback):
         
         print_log(f"Generated {len(results)} results")
         return results
-    
-    # # Test Dataset doesn't have Target(GT) -> Cannot use this function only with ROUGE(need to modify)
-    # def rank_candidates(self, candidates, target):
-    #     if not target or len(candidates) <= 1:
-    #         return candidates
 
-    #     scores = []
-
-    #     for candidate in candidates:
-    #         rouge_result = self.rouge_metric.compute(
-    #             predictions=[candidate],
-    #             # references=[target],
-    #             use_stemmer=False # Train, Evaluate and Inference are all done with Korean Data
-    #         )
-
-    #         score = (
-    #             # rouge_result['rouge1'] * 0.5 +
-    #             # rouge_result['rouge2'] * 0.3 +
-    #             # rouge_result['rougeL'] * 0.2
-    #         )
-
-    #         scores.append((score, candidate))
-
-    #     scores.sort(key=lambda x: x[0], reverse=True)
-    #     ranked_candidates = [candidate for score, candidate in scores]
-
-    #     return ranked_candidates
-            
-    # def evaluate_results(self, results):
-    #     print_log("Evaluating results...")
+    def evaluate_results(self, generated_result):
+        print_log("Evaluating results...")
         
-    #     predictions = [result['candidates'][0] for result in results]
-    #     # Evaluate with PPL (Need to Select a Model to Calculate...)
-
-    #     return eval_results
-
+        targets = [result['output'] for result in generated_result]
+        predictions = [result['best_candidate'] for result in generated_result]
+        
+        rouge_results = self.rouge_metric.compute(
+            predictions=predictions,
+            references=targets,
+        )
+        
+        combined_score = (
+            rouge_results['rouge1'] * self.args.rouge1_weight +
+            rouge_results['rouge2'] * self.args.rouge2_weight +
+            rouge_results['rougeL'] * self.args.rougeL_weight
+        )
+        
+        eval_results = {
+            "rouge1": rouge_results['rouge1'],
+            "rouge2": rouge_results['rouge2'],
+            "rougeL": rouge_results['rougeL'],
+            "combined_rouge_score": combined_score,
+            "num_examples": len(results),
+            "num_candidates_per_example": self.args.num_cands
+        }
+        
+        return eval_results
+    
 def set_seed(seed: int = 42):
     random.seed(seed)
     np.random.seed(seed)
@@ -463,10 +471,6 @@ def load_model_and_tokenizer(args):
     tokenizer_name = args.tokenizer_name or args.model_name
     print_log(f"Loading tokenizer: {tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=args.cache_dir)
-
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print_log("Set pad_token to eos_token")
 
     print_log(f"Loading model: {args.model_name}")
     print_log(f"Model type: {args.model_type}")
@@ -487,6 +491,13 @@ def load_model_and_tokenizer(args):
         )
 
     print_log(f"Model loaded. Parameters: {model.num_parameters():,}")
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        print_log(f"[DBG] Set pad_token to eos_token: {tokenizer.pad_token}")
+    elif tokenizer.pad_token == '<|end_of_text|>':
+        tokenizer.pad_token = tokenizer.eos_token
+        print_log(f"[DBG] Changed pad_token from <|end_of_text|> to eos_token: {tokenizer.pad_token}")
     
     if args.use_lora:
         print_log("Applying LoRA configuration...")
@@ -593,29 +604,28 @@ def train_model(args):
         trainer.save_model()
         print_log("Full model saved")
 
-    if args.mode == "train_and_test":
-        print_log("Running automatic inference with best checkpoint...")
-        final_results, final_eval = rouge_callback.run_final_inference(model, tokenizer, output_dir)
-        
-        # Save training summary
-        training_summary = {
-            "model_name": args.model_name,
-            "run_name": run_name,
-            "best_checkpoint": rouge_callback.best_checkpoint,
-            "best_combined_score": rouge_callback.best_rouge_score,
-            "final_evaluation": final_eval,
-            "training_args": vars(args),
-            "evaluation_history": rouge_callback.evaluation_results
-        }
-        
-        summary_file = os.path.join(output_dir, f"{run_name}_training_summary.json")
-        with open(summary_file, 'w', encoding='utf-8') as f:
-            json.dump(training_summary, f, ensure_ascii=False, indent=2)
-        
-        print_log(f"Training summary saved to {summary_file}")
-        
-        return model, tokenizer, final_results, final_eval
+    print_log("Running automatic inference with best checkpoint...")
+    final_results, final_eval = rouge_callback.run_final_inference(model, tokenizer, output_dir)
     
+    # Save training summary
+    training_summary = {
+        "model_name": args.model_name,
+        "run_name": run_name,
+        "best_checkpoint": rouge_callback.best_checkpoint,
+        "best_combined_score": rouge_callback.best_rouge_score,
+        "final_evaluation": final_eval,
+        "training_args": vars(args),
+        "evaluation_history": rouge_callback.evaluation_results
+    }
+    
+    summary_file = os.path.join(output_dir, f"{run_name}_training_summary.json")
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(training_summary, f, ensure_ascii=False, indent=2)
+    
+    print_log(f"Training summary saved to {summary_file}")
+    
+    return model, tokenizer, final_results, final_eval
+
     print_log(f"Training complete. Model saved to {output_dir}")
     return model, tokenizer, None, None
 
@@ -624,8 +634,26 @@ def main():
     set_seed(args.seed)
     
     print_log("Starting main execution")
-    print_log(f"Mode: {args.mode}")
     print_log(f"Model: {args.model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+
+    print_log(f">>> Tokenizer for '{args.model_name}' loaded successfully.")
+
+    print_log("\n--- Special Tokens Map ---")
+    print_log(tokenizer.special_tokens_map)
+
+    print_log("\n--- Detailed Special Tokens ---")
+    print_log(f"BOS (Begin of Sentence) Token: '{tokenizer.bos_token}'")
+    print_log(f"EOS (End of Sentence) Token: '{tokenizer.eos_token}'")
+    print_log(f"PAD (Padding) Token: '{tokenizer.pad_token}'")
+    print_log(f"UNK (Unknown) Token: '{tokenizer.unk_token}'")
+    print_log(f"SEP (Separator) Token: '{tokenizer.sep_token}'")
+    print_log(f"CLS (Classifier) Token: '{tokenizer.cls_token}'")
+
+    print_log("\n--- All Special Tokens ---")
+    print_log(tokenizer.all_special_tokens)
+
     print_log(f"Use chat template: {args.use_chat_template}")
     print_log(f"Dynamic padding: pad_to_multiple_of={args.pad_to_multiple_of}")
     
@@ -635,7 +663,7 @@ def main():
     run_name = f"{model_id}_{timestamp}"
 
     # Initialize wandb
-    if args.mode in ["train", "train_and_test"]:
+    if args.train:
         wandb.init(
             project=args.wandb_project,
             config=vars(args),
@@ -643,10 +671,7 @@ def main():
         )
         print_log("Wandb initialized")
     
-    if args.mode == "train":
-        model, tokenizer, _, _ = train_model(args)
-
-    elif args.mode == "train_and_test":
+    if args.train:
         model, tokenizer, final_results, final_eval = train_model(args)
         
         if final_results and final_eval:
@@ -658,7 +683,7 @@ def main():
                 else:
                     print_log(f"  {key}: {value}")
 
-    elif args.mode == "inf" or args.mode == "test":
+    elif args.test:
         # Inference only mode
         print_log("Starting inference mode")
         fewshot_examples = prepare_fewshot_examples(args.train_path, args.fewshot_seed, args.num_fewshot * 3)
@@ -668,37 +693,20 @@ def main():
             print_log(f"Loading LoRA model from {args.lora_model_path}")
             model = PeftModel.from_pretrained(model, args.lora_model_path)
         
-        test_dataset = EntailmentDataset(
-            args.test_path, tokenizer, args.max_input_length, args.max_output_length,
-            args.model_type, "test", args.use_chat_template, fewshot_examples, args.num_fewshot
-        )
+        _, _, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
         
-        # Create dummy callback for inference
-        callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples) 
-        # results = callback.generate_candidates(model, tokenizer, test_dataset)
-        results = callback.generate_candidates_optimized(model, tokenizer, test_dataset)
-        eval_results = callback.evaluate_results(results)
+        inference_callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
+        inference_results = inference_callback.generate_candidates_optimized(model, tokenizer, test_dataset)
         
         # Save results
         timestamp = get_timestamp()
         model_id = get_model_id_from_path(args.model_name)
-        output_dir = os.path.join(args.output_dir, f"{model_id}_{timestamp}_inference")
-        os.makedirs(output_dir, exist_ok=True)
         
-        output_file = os.path.join(output_dir, f"{model_id}_{timestamp}_inference_results.json")
+        output_file = os.path.join("./results", f"{model_id}_{timestamp}_inference_results.json")
         with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, ensure_ascii=False, indent=2)
-            
-        eval_file = os.path.join(output_dir, f"{model_id}_{timestamp}_inference_evaluation.json")
-        with open(eval_file, 'w', encoding='utf-8') as f:
-            json.dump(eval_results, f, ensure_ascii=False, indent=2)
+            json.dump(inference_results, f, ensure_ascii=False, indent=2)
         
-        print_log("Inference Results:")
-        for key, value in eval_results.items():
-            if isinstance(value, float):
-                print_log(f"  {key}: {value:.4f}")
-            else:
-                print_log(f"  {key}: {value}")
 
 if __name__ == "__main__":
     main()
+
