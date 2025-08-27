@@ -4,7 +4,15 @@ import numpy as np
 from evaluate import load
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import torch
-from typing import List
+from typing import List, Dict
+from datetime import datetime
+
+def get_timestamp():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def print_log(message, prefix="LOG"):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
 
 def compute_interactive_bleu(sentence_a: List[str], sentence_b: List[str]) -> float:
     smoothing_function = SmoothingFunction().method1
@@ -50,7 +58,7 @@ def compute_perplexity(model, tokenizer, text: str, device) -> float:
 
     return perplexity.item()
 
-def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: flaot = 0.0, lambda3: float = 0.0):
+def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
     rouge_scores = compute_rouge(generated, references)
 
     reward_a = (
@@ -59,6 +67,15 @@ def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0
         lambda3 * rouge_scores["rougeL"]
     )
 
+    for i in compute_rouge(generated, references).keys():
+        print_log(f"=== Adapter A Reward - {i} ===")
+        print_log(f"    Generated: {generated}")
+        print_log(f"    Reference: {references}")
+        print_log(f"    ROUGE-1  : {rouge_scores['rouge1']:.4f}")
+        print_log(f"    ROUGE-2  : {rouge_scores['rouge2']:.4f}")
+        print_log(f"    ROUGE-L  : {rouge_scores['rougeL']:.4f}")
+        print_log(f"    Final Reward: {reward_a:.4f}")
+        
     return reward_a
 
 def compute_adapter_b_reward(generated: str, references: str, adapter_a_cands: List[str], model=None, tokenizer=None, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
@@ -79,4 +96,13 @@ def compute_adapter_b_reward(generated: str, references: str, adapter_a_cands: L
         -lambda3 * ppl_penalty
     )
 
+    for i in compute_rouge(generated, references).keys():
+        print_log(f"=== Adapter B Reward - {i} ===")
+        print_log(f"    Generated: {generated}")
+        print_log(f"    Reference: {references}")
+        print_log(f"    Interactive BLEU: {interactive_bleu:.4f}")
+        print_log(f"    ROUGE-L       : {rouge_l:.4f}")
+        print_log(f"    PPL Penalty   : {ppl_penalty:.4f}")
+        print_log(f"    Final Reward : {reward_b:.4f}")
+        
     return reward_b
