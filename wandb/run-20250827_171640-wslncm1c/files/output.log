@@ -1,0 +1,66 @@
+[2025-08-27 17:16:41] Starting Dual Adapter GRPO Training
+Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.17it/s]
+[2025-08-27 17:16:47] Loading Data
+[2025-08-27 17:16:47] Training samples: 1520, Validation samples: 190
+[2025-08-27 17:16:47] === Data Samples ===
+[2025-08-27 17:16:47] Sample Keys: ['id', 'input', 'output']
+[2025-08-27 17:16:47] Sample Premise: 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 17:16:47] Sample Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+[2025-08-27 17:16:47] Sample Label: entailment
+[2025-08-27 17:16:47] Sample Reference Output: '브람스를 좋아하세요?'에 독일 작곡가인 브람스의 이름이 들어가 있다. 따라서 가설 문장은 함의에 해당한다.
+[2025-08-27 17:16:47] ===================
+[2025-08-27 17:16:47] Creating LoRA Adapters
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/mapping_func.py:73: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/tuners/tuners_utils.py:190: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+[2025-08-27 17:16:47] Training Adapter A(ROUGE Optimizer)
+[2025-08-27 17:16:47] Train Dataset Size: 1520
+[2025-08-27 17:16:47] === Train Dataset Samples ===
+[2025-08-27 17:16:47]
+--- Sample 1 ---
+[2025-08-27 17:16:47] Prompt   : 다음 전제와 가설의 관계를 바탕으로 '함의 분석 설명문'을 생성하세요.
+
+    [전제] {premise}
+    [가설] {proposition}
+    [관계] {label}
+
+    [함의 분석 설명문]
+[2025-08-27 17:16:47] Premise  : 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 17:16:47] Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+[2025-08-27 17:16:47] Label    : entailment
+[2025-08-27 17:16:47] Reference: '브람스를 좋아하세요?'에 독일 작곡가인 브람스의 이름이 들어가 있다. 따라서 가설 문장은 함의에 해당한다.
+[2025-08-27 17:16:47]
+--- Sample 2 ---
+[2025-08-27 17:16:47] Prompt   : 다음 전제와 가설의 관계를 바탕으로 '함의 분석 설명문'을 생성하세요.
+
+    [전제] {premise}
+    [가설] {proposition}
+    [관계] {label}
+
+    [함의 분석 설명문]
+[2025-08-27 17:16:47] Premise  : 기관별로는 ▲전북테크로파크는 3개월간 124개소 30% 인하 ▲전북경제통상진흥원은 3개월간 64개소 50% ▲자동차융합기술원은 3개월간 35개소 30% ▲ECO융합섬유연구원은 3개월간 7개소 30% ▲전북생물산업진흥원은 3개월간 35개소 30% ▲군산의료원 3개월간 2개소 35% ▲남원의료원 3개월간 1개소 35% ▲전북여성교육문화센터 6개월간 2개소 30% ▲전북문화콘텐츠산업진흥원은 4개월간 22개소 35%를 인하하게 된다. 해당 기간 동안 9개 기관의 총 인하액은 1억8200여만 원으로 총 임대료(5억5100여만 원)의 33% 수준이다.
+[2025-08-27 17:16:47] Proposition: 9개 기관의 인하액은 총 임대료의 약 3분의 1 수준이다.
+[2025-08-27 17:16:47] Label    : entailment
+[2025-08-27 17:16:47] Reference: 9개 기관의 총 인하액은 1억 8200여만 원으로 총임대료(5억 5100여만 원)의 33% 수준이므로, 9개 기관의 인하액은 총임대료의 약 3분의 1 수준이라는 가설 문장은 함의에 해당한다.
+[2025-08-27 17:16:47]
+--- Sample 3 ---
+[2025-08-27 17:16:47] Prompt   : 다음 전제와 가설의 관계를 바탕으로 '함의 분석 설명문'을 생성하세요.
+
+    [전제] {premise}
+    [가설] {proposition}
+    [관계] {label}
+
+    [함의 분석 설명문]
+[2025-08-27 17:16:47] Premise  : 서초구는 코로나19 감염병 사태로 인해 경제적 상황이 매우 어려워진 저소득층 학생들의 학업 장려를 위해 생활장학금 지원이 긴급히 필요한 점을 서초장학재단에 제안한 것으로 알려졌다. 이에 서초장학재단은 당초 선발한 2020년 서초장학생 55명(고등학생 30명, 대학생 25명)외에 안타깝게 탈락한 학생 가운데 저소득층 학생 총 31명에게 각 100만 원씩 총 3100만 원을 추가적으로 지원하기로 한 것이다.
+[2025-08-27 17:16:47] Proposition: 서초장학재단은 선발된 장학생 외에 서른 명이 넘는 저소득층에게 추가 지원을 한다.
+[2025-08-27 17:16:47] Label    : entailment
+[2025-08-27 17:16:47] Reference: 안타깝게 탈락한 학생 가운데 저소득층 학생 총 31명에게 각 100만 원씩 총 3,100만 원을 추가로 지원하기로 했으므로, 서른 명이 넘는 저소득층에게 추가 지원을 한다는 가설 문장은 함의에 해당한다.
+Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 119, in <module>
+    main()
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 78, in main
+    adapter_a = train_adapter_a(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 65, in train_adapter_a
+    assert 0
+AssertionError

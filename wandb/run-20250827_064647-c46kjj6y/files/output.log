@@ -1,0 +1,28 @@
+[2025-08-27 06:46:48] Starting Dual Adapter GRPO Training
+Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.19it/s]
+[2025-08-27 06:46:53] Loading Data
+[2025-08-27 06:46:53] Training samples: 1520, Validation samples: 190
+[2025-08-27 06:46:53] === Data Samples ===
+[2025-08-27 06:46:53] Sample Keys: ['id', 'input', 'output']
+[2025-08-27 06:46:53] Sample Premise: 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 06:46:53] Sample Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+[2025-08-27 06:46:53] Sample Label: entailment
+[2025-08-27 06:46:53] Sample Reference Output: '브람스를 좋아하세요?'에 독일 작곡가인 브람스의 이름이 들어가 있다. 따라서 가설 문장은 함의에 해당한다.
+[2025-08-27 06:46:53] ===================
+[2025-08-27 06:46:53] Creating LoRA Adapters
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/mapping_func.py:73: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/tuners/tuners_utils.py:190: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+[2025-08-27 06:46:54] Training Adapter A(ROUGE Optimizer)
+[2025-08-27 06:46:54] Reference Map Size: 1
+Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 119, in <module>
+    main()
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 78, in main
+    adapter_a = train_adapter_a(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 81, in train_adapter_a
+    trainer = creat_grpo_trainer(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 43, in creat_grpo_trainer
+    grpo_trainer = GRPOTrainer(
+TypeError: GRPOTrainer.__init__() got an unexpected keyword argument 'num_generations'

@@ -1,0 +1,12 @@
+[2025-08-27 06:10:08] Starting Dual Adapter GRPO Training
+Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.10it/s]
+[2025-08-27 06:10:13] Loading Data
+[2025-08-27 06:10:13] Training samples: 1520, Validation samples: 190
+[2025-08-27 06:10:13] === Data Samples ===
+[2025-08-27 06:10:13] Sample Keys: ['id', 'input', 'output']
+Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 119, in <module>
+    main()
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 66, in main
+    print_log(f"Sample Premise: {sample['premise']}")
+KeyError: 'premise'

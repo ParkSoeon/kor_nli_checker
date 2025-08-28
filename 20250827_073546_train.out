@@ -1,0 +1,25 @@
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(
+wandb: Appending key for api.wandb.ai to your netrc file: /home/nlplab/.netrc
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(
+2025-08-27 07:35:49.625341: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-08-27 07:35:49.632810: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1756247749.641579 2250401 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1756247749.644172 2250401 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1756247749.651039 2250401 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247749.651051 2250401 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247749.651053 2250401 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247749.651054 2250401 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-08-27 07:35:49.653203: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 11, in <module>
+    from train import train_adapter_a, train_adapter_b
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 207, in <module>
+    from metrics import compute_adapter_a_reward, compute_adapter_b_reward
+  File "/media/nlplab/hdd1/hclt_ss/grpo/metrics.py", line 61, in <module>
+    def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: flaot = 0.0, lambda3: float = 0.0) -> float:
+NameError: name 'flaot' is not defined. Did you mean: 'float'?

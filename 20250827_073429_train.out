@@ -1,0 +1,74 @@
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(
+wandb: Appending key for api.wandb.ai to your netrc file: /home/nlplab/.netrc
+wandb: W&B API key is configured. Use `wandb login --relogin` to force relogin
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/requests/__init__.py:86: RequestsDependencyWarning: Unable to find acceptable character detection dependency (chardet or charset_normalizer).
+  warnings.warn(
+2025-08-27 07:34:32.376340: I tensorflow/core/util/port.cc:153] oneDNN custom operations are on. You may see slightly different numerical results due to floating-point round-off errors from different computation orders. To turn them off, set the environment variable `TF_ENABLE_ONEDNN_OPTS=0`.
+2025-08-27 07:34:32.383913: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1756247672.392670 2249610 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1756247672.395279 2249610 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1756247672.402156 2249610 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247672.402169 2249610 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247672.402171 2249610 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1756247672.402172 2249610 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+2025-08-27 07:34:32.404331: I tensorflow/core/platform/cpu_feature_guard.cc:210] This TensorFlow binary is optimized to use available CPU instructions in performance-critical operations.
+To enable the following instructions: AVX2 AVX_VNNI FMA, in other operations, rebuild TensorFlow with the appropriate compiler flags.
+wandb: Currently logged in as: soeon (s03on) to https://api.wandb.ai. Use `wandb login --relogin` to force relogin
+wandb: Tracking run with wandb version 0.21.0
+wandb: Run data is saved locally in /media/nlplab/hdd1/hclt_ss/grpo/wandb/run-20250827_073433-ys3zqr30
+wandb: Run `wandb offline` to turn off syncing.
+wandb: Syncing run grpo_run_20250827_073433
+wandb: ⭐️ View project at https://wandb.ai/s03on/2025HCLT%28dual_adapter_grpo%29
+wandb: 🚀 View run at https://wandb.ai/s03on/2025HCLT%28dual_adapter_grpo%29/runs/ys3zqr30
+[2025-08-27 07:34:34] Starting Dual Adapter GRPO Training
+Loading checkpoint shards:   0%|          | 0/4 [00:00<?, ?it/s]Loading checkpoint shards:  25%|██▌       | 1/4 [00:01<00:03,  1.04s/it]Loading checkpoint shards:  50%|█████     | 2/4 [00:02<00:02,  1.01s/it]Loading checkpoint shards:  75%|███████▌  | 3/4 [00:03<00:01,  1.02s/it]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.37it/s]Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.19it/s]
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/mapping_func.py:73: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/tuners/tuners_utils.py:190: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+No label_names provided for model class `PeftModelForCausalLM`. Since `PeftModel` hides base models input arguments, if label_names is not given, label_names can't be set automatically within `Trainer`. Note that empty label_names list will be used instead.
+wandb: WARNING The `run_name` is currently set to the same value as `TrainingArguments.output_dir`. If this was not intended, please specify a different run name by setting the `TrainingArguments.run_name` parameter.
+[2025-08-27 07:34:40] Loading Data
+[2025-08-27 07:34:40] Training samples: 1520, Validation samples: 190
+[2025-08-27 07:34:40] === Data Samples ===
+[2025-08-27 07:34:40] Sample Keys: ['id', 'input', 'output']
+[2025-08-27 07:34:40] Sample Premise: 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 07:34:40] Sample Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+[2025-08-27 07:34:40] Sample Label: entailment
+[2025-08-27 07:34:40] Sample Reference Output: '브람스를 좋아하세요?'에 독일 작곡가인 브람스의 이름이 들어가 있다. 따라서 가설 문장은 함의에 해당한다.
+[2025-08-27 07:34:40] ===================
+[2025-08-27 07:34:40] Creating LoRA Adapters
+[2025-08-27 07:34:40] Training Adapter A(ROUGE Optimizer)
+[2025-08-27 07:34:40] Reference Map Size: 1
+[2025-08-27 07:34:42] Starting Adapter A Training
+  0%|          | 0/36480 [00:00<?, ?it/s]Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 119, in <module>
+    main()
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 78, in main
+    adapter_a = train_adapter_a(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 311, in train_adapter_a
+    trainer.train()
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/transformers/trainer.py", line 2206, in train
+    return inner_training_loop(
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/transformers/trainer.py", line 2548, in _inner_training_loop
+    tr_loss_step = self.training_step(model, inputs, num_items_in_batch)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/transformers/trainer.py", line 3743, in training_step
+    inputs = self._prepare_inputs(inputs)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/trl/extras/profiling.py", line 98, in wrapper
+    return func(self, *args, **kwargs)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/trl/trainer/grpo_trainer.py", line 1279, in _prepare_inputs
+    generation_batch = self._generate_and_score_completions(generation_batch)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/trl/trainer/grpo_trainer.py", line 1677, in _generate_and_score_completions
+    rewards_per_func = self._calculate_rewards(inputs, original_prompts, completions, completion_ids_list)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/trl/extras/profiling.py", line 98, in wrapper
+    return func(self, *args, **kwargs)
+  File "/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/trl/trainer/grpo_trainer.py", line 1321, in _calculate_rewards
+    output_reward_func = reward_func(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 282, in adapter_a_reward_function
+    reward = compute_adapter_a_reward(
+NameError: name 'compute_adapter_a_reward' is not defined
+[1;34mwandb[0m: 
+[1;34mwandb[0m: 🚀 View run [33mgrpo_run_20250827_073433[0m at: [34mhttps://wandb.ai/s03on/2025HCLT%28dual_adapter_grpo%29/runs/ys3zqr30[0m
+[1;34mwandb[0m: Find logs at: [1;35m../../../../../media/nlplab/hdd1/hclt_ss/grpo/wandb/run-20250827_073433-ys3zqr30/logs[0m

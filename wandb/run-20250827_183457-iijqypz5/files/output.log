@@ -1,0 +1,33 @@
+[2025-08-27 18:34:58] Starting Dual Adapter GRPO Training
+Loading checkpoint shards: 100%|██████████| 4/4 [00:03<00:00,  1.19it/s]
+[2025-08-27 18:35:03] Loading Data
+[2025-08-27 18:35:03] Training samples: 1520, Validation samples: 190
+[2025-08-27 18:35:03] === Data Samples ===
+[2025-08-27 18:35:03] Sample Keys: ['id', 'input', 'output']
+[2025-08-27 18:35:03] Sample Premise: 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 18:35:03] Sample Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+[2025-08-27 18:35:03] Sample Label: entailment
+[2025-08-27 18:35:03] Sample Reference Output: '브람스를 좋아하세요?'에 독일 작곡가인 브람스의 이름이 들어가 있다. 따라서 가설 문장은 함의에 해당한다.
+[2025-08-27 18:35:03] ====================
+[2025-08-27 18:35:03] Creating LoRA Adapters
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/mapping_func.py:73: UserWarning: You are trying to modify a model with PEFT for a second time. If you want to reload the model with a different config, make sure to call `.unload()` before.
+  warnings.warn(
+/home/nlplab/anaconda3/envs/soeon/lib/python3.10/site-packages/peft/tuners/tuners_utils.py:190: UserWarning: Already found a `peft_config` attribute in the model. This will lead to having multiple adapters in the model. Make sure to know what you are doing!
+  warnings.warn(
+[2025-08-27 18:35:04] Training Adapter A(ROUGE Optimizer)
+[2025-08-27 18:35:04] Train Dataset Size: 1520
+[2025-08-27 18:35:04] === Train Dataset Samples ===
+[2025-08-27 18:35:04]
+--- Sample 1 ---
+[2025-08-27 18:35:04] Prompt     :
+[128000, 128006, 9125, 128007, 1432, 128009, 128006, 9125, 128007, 271, 13447, 49531, 57519, 38187, 81673, 36609, 102546, 21028, 116680, 18918, 82818, 120378, 43139, 52072, 21028, 109862, 114942, 123926, 53017, 92245, 13, 128009, 128006, 882, 128007, 271, 58, 66965, 38187, 5787, 112887, 3451, 102914, 101856, 120155, 117004, 92245, 45258, 16969, 328, 7497, 103123, 104790, 30446, 118388, 3451, 1114, 42529, 21028, 66610, 101868, 529, 43139, 103185, 101930, 82068, 78453, 71023, 18359, 101585, 42771, 32428, 66610, 101090, 101607, 121471, 54780, 124474, 42529, 24486, 76628, 116688, 65677, 102581, 24486, 112045, 246, 42771, 29102, 69332, 20565, 20565, 101787, 21121, 105292, 100660, 34983, 86513, 108, 85767, 113286, 118999, 120878, 77535, 18359, 96717, 35495, 101360, 91786, 13, 104293, 34804, 116592, 54780, 102155, 101607, 58232, 21028, 101327, 101151, 24486, 66610, 100660, 19954, 11, 328, 7497, 55216, 67945, 55430, 121471, 54780, 69332, 20565, 20565, 36609, 42529, 24486, 328, 7497, 103886, 103934, 57390, 30446, 118388, 3451, 102914, 101856, 120155, 117004, 92245, 45258, 16969, 220, 23, 100551, 220, 2148, 124521, 111915, 112938, 112931, 627, 58, 20565, 102546, 5787, 104293, 34804, 116592, 13094, 124675, 24486, 328, 7497, 103934, 57390, 127899, 21028, 116809, 102772, 69332, 108047, 20565, 87134, 13094, 105510, 63375, 13447, 627, 58, 126951, 5787, 87092, 479, 198, 58, 79053, 21028, 109862, 114942, 52688, 5787, 128009, 128006, 78191, 128007, 271]
+[2025-08-27 18:35:04] Premise    : 또한 ‘브람스를 좋아하세요?’는 SBS 단편드라마 ‘17세의 조건’으로 감각적 연출을 선보인 조영민 감독과 섬세한 필력을 자랑한 류보리 작가가 의기투합해 웰메이드 작품 탄생을 예고하고 있다. 박은빈과 김민재의 신선한 조합에, SBS 기대주 감독과 작가가 가세한 SBS 새 월화드라마 ‘브람스를 좋아하세요?’는 8월 31일에 첫 방송된다.
+[2025-08-27 18:35:04] Proposition: 박은빈이 출연한 SBS 월화 드라마의 제목에는 작곡가 이름이 들어간다.
+Traceback (most recent call last):
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 128, in <module>
+    main()
+  File "/media/nlplab/hdd1/hclt_ss/grpo/main.py", line 78, in main
+    adapter_a = train_adapter_a(
+  File "/media/nlplab/hdd1/hclt_ss/grpo/train.py", line 63, in train_adapter_a
+    print_log(f"Label      : {sample['labels']}")
+KeyError: 'labels'

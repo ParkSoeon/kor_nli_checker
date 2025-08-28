@@ -1,0 +1,1 @@
+{"profiling/Time taken: GRPOTrainer.transformers.generate":11.610511181992479,"profiling/Time taken: GRPOTrainer._get_per_token_logps_and_entropies":1.2013217910425738,"_wandb":{"runtime":21},"_runtime":21,"_timestamp":1.7562476956393142e+09,"_step":1,"train/global_step":0}

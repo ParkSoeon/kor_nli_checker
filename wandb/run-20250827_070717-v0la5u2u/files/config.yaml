@@ -1,0 +1,115 @@
+_wandb:
+    value:
+        cli_version: 0.21.0
+        e:
+            7rangw91lb1fcee2xz5yxm94jttxfmh0:
+                args:
+                    - --model_name
+                    - /home/nlplab/hdd1/hclt_ss/output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300
+                    - --train_data
+                    - ../dataset/함의분석_train.json
+                    - --val_data
+                    - ../dataset/함의분석_valid.json
+                    - --output_dir
+                    - ../output/grpo_20250827_070713
+                    - --ppl_model
+                    - kakaocorp/kanana-1.5-8b-instruct-2505
+                    - --epochs
+                    - "3"
+                    - --batch_size
+                    - "1"
+                    - --learning_rate
+                    - "2e-5"
+                    - --num_candidates
+                    - "5"
+                    - --lambda1
+                    - "0.5"
+                    - --lambda2
+                    - "0.3"
+                    - --lambda3
+                    - "0.2"
+                    - --lora_r
+                    - "8"
+                    - --lora_alpha
+                    - "16"
+                    - --lora_dropout
+                    - "0.1"
+                    - --device
+                    - cuda
+                codePath: grpo/main.py
+                codePathLocal: main.py
+                cpu_count: 16
+                cpu_count_logical: 24
+                cudaVersion: "12.2"
+                disk:
+                    /:
+                        total: "982820896768"
+                        used: "787068604416"
+                email: soeon2003@gachon.ac.kr
+                executable: /home/nlplab/anaconda3/envs/soeon/bin/python
+                git:
+                    commit: b80d6f20f390df1d5510a44a05da9cd92298e602
+                    remote: https://github.com/ParkSoeon/kor_nli_checker
+                gpu: NVIDIA GeForce RTX 3090
+                gpu_count: 3
+                gpu_nvidia:
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-a34414e8-f669-1c1e-d4b8-84a118998713
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-4150fe9c-9448-8b7d-3f27-269ff0585d4d
+                    - architecture: Ampere
+                      cudaCores: 10496
+                      memoryTotal: "25769803776"
+                      name: NVIDIA GeForce RTX 3090
+                      uuid: GPU-41867bd3-f7bb-0e9d-7a8d-ffb4216c46b9
+                host: nlplab-120
+                memory:
+                    total: "134849150976"
+                os: Linux-5.15.0-113-generic-x86_64-with-glibc2.31
+                program: /media/nlplab/hdd1/hclt_ss/grpo/main.py
+                python: CPython 3.10.18
+                root: /media/nlplab/hdd1/hclt_ss/grpo
+                startedAt: "2025-08-26T22:07:17.769772Z"
+                writerId: 7rangw91lb1fcee2xz5yxm94jttxfmh0
+        m: []
+        python_version: 3.10.18
+        t:
+            "1":
+                - 1
+                - 2
+                - 3
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 84
+                - 98
+            "2":
+                - 1
+                - 2
+                - 3
+                - 5
+                - 11
+                - 41
+                - 49
+                - 51
+                - 53
+                - 71
+                - 84
+                - 98
+            "3":
+                - 13
+            "4": 3.10.18
+            "5": 0.21.0
+            "6": 4.53.2
+            "12": 0.21.0
+            "13": linux-x86_64
