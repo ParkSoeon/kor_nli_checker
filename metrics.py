@@ -7,10 +7,10 @@ import torch
 from typing import List, Dict
 from datetime import datetime
 
-def get_timestamp():
+def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def print_log(message, prefix="LOG"):
+def print_log(message: str, prefix: str="LOG") -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
@@ -58,7 +58,7 @@ def compute_perplexity(model, tokenizer, text: str, device) -> float:
 
     return perplexity.item()
 
-def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
+def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.5, lambda2: float = 0.3, lambda3: float = 0.2) -> float:
     rouge_scores = compute_rouge(generated, references)
 
     reward_a = (
