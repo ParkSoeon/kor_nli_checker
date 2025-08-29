@@ -4,7 +4,7 @@ from trl import GRPOConfig, GRPOTrainer
 from transformers import AutoTokenizer, TrainingArguments, DataCollatorForLanguageModeling
 import torch
 from data import load_data, GRPODataset
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional, Any
 from model import format_input_prompt
 from datetime import datetime
 from metrics import compute_adapter_a_reward, compute_adapter_b_reward
@@ -88,7 +88,7 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
     print_log(f"Reference Map Size: {len(reference_map)}")
 
     # Define a Reward Function based on ROUGE(for Adapter A)
-    def adapter_a_reward_function(samples: str, responses: str, **kwargs) -> float:
+    def adapter_a_reward_function(samples: List[Dict[str, Any]], responses: List[str], prompts: Optional[List[str]] = None, **kwargs) -> List[float]:
 
         print_log(f"Reward Function called with kwargs keys: {list(kwargs.keys())}")
         print_log(f"    Number of samples: {len(samples) if samples else 0}")
@@ -107,6 +107,7 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
                 reference = ""
 
             reward = compute_adapter_a_reward(generated=response, references=reference)
+            rewards.append(reward)
 
         print_log(f"Average Reward: {sum(rewards)/len(rewards) if rewards else 0:.4f}")
         return rewards
