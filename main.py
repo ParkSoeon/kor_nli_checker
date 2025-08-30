@@ -42,7 +42,98 @@ def parse_args():
 
     parser.add_argument('--ppl_model', type=str, required=True, help='Model name for PPL calculation in Adapter B reward')
 
+    parser.add_argument('--adapter_a_only', store_true, help='Enable experiment mode with reduced data and epochs for quick testing')
+    parser.add_argument('--adapter_b_only', store_true, help='Enable experiment mode with reduced data and epochs for quick testing')
+    parser.add_argument('--full_exp', store_true, help='Disable experiment mode for full training')
+    parser.add_argument('--adapter_a_candidate_file', type=str, default=None, help='Path to pre-generated Adapter A candidates JSON file')
+
     return parser.parse_args()
+
+def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
+    print_log("Running Adapter A in Experiment Mode")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    lora_config = create_lora_config(
+        r=args.lora_r,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout
+    )
+    adapter_a, _ = create_dual_adapters(base_model, lora_config)
+
+    adapter_a = train_adapter_a(
+        adapter_a, tokenizer, train_data, val_data, args.output_dir, args
+    )
+    adapter_a_val_candidates = generate_adapter_a_candidates(
+        adapter_a, tokenizer, val_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
+    )
+
+    os.mkdir(args.output_dir, exist_ok=True)
+    adapter_a_train_file = os.path.join(args.output_dir, "adapter_a_val_candidates_{timestamp}.json")
+    adapter_a_val_file = os.path.join(args.output_dir, "adapter_a_val_candidates_{timestamp}.json")
+
+    save_candidate_to_json(adapter_a_train_candidates, adapter_a_train_file)
+    save_candidate_to_json(adapter_a_val_candidates, adapter_a_val_file)
+
+    adapter_a.save_pretrained(os.path.join(args.output_dir, f"adapter_a_{timestamp}"))
+
+    print_log(f"Adapter A Model and Candidates saved to {args.output_dir}")
+    print_log("Adapter A Training Complete")
+
+    return adapter_a_candidates
+
+def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates):
+    print_log("Running Adapter B in Experiment Mode")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    lora_config = create_lora_config(
+        r=args.lora_r,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout
+    )
+    _, adapter_b = create_dual_adapters(base_model, lora_config)
+
+    adapter_b = train_adapter_b(
+        adapter_b, tokenizer, train_data, val_data, 
+        adapter_a_candidates, args.output_dir, args, ppl_model
+    )
+
+    print_log("Generating Adapter B Candidates for ALL data")
+    adapter_b_candidates = generate_adapter_b_candidates(
+        adapter_b, tokenizer, val_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
+    )
+
+    os.mkdir(args.output_dir, exist_ok=True)
+    adapter_b_train_file = os.path.join(args.output_dir, "adapter_b_val_candidates_{timestamp}.json")
+    adapter_b_val_file = os.path.join(args.output_dir, "adapter_b_val_candidates_{timestamp}.json")
+
+    save_candidate_to_json(adapter_b_train_candidates, adapter_b_train_file)
+    save_candidate_to_json(adapter_b_val_candidates, adapter_b_val_file)
+
+    adapter_b.save_pretrained(os.path.join(args.output_dir, f"adapter_b_{timestamp}"))
+
+    print_log(f"Adapter B Model and Candidates saved to {args.output_dir}")
+    print_log("Adapter B Training Complete")
+
+    return adapter_b_candidates
+
+def combine_candidates(adapter_a_candidates, adapter_b_candidates, output_dir):
+    print_log("Combining Adapter A and Adapter B Candidates for Reranking")
+
+    combined_candidates = {}
+
+    for key in adapter_a_candidates.keys():
+        a_cands = adapter_a_candidates.get(key, [])
+        b_cands = adapter_b_candidates.get(key, [])
+
+        combined_candidates[key] = a_cands + b_cands
+
+    os.makedirs(output_dir, exist_ok=True)
+    combined_files = os.path.join(output_dir, "candidates_for_reranking.json")
+    save_candidate_to_json(combined_candidates, combined_files)
+
+    print_log(f"Combined candidates saved to {combined_files}")
+    return combined_candidates
+
 
 def main():
     args = parse_args()
@@ -70,55 +161,25 @@ def main():
             print_log(f"Sample Reference Output: {sample['output']}")
     print_log("====================")
 
-    print_log("Creating LoRA Adapters")
-    lora_config = create_lora_config(r=args.lora_r, alpha=args.lora_alpha, dropout=args.lora_dropout)
-    adapter_a, adapter_b = create_dual_adapters(base_model, lora_config)
+    if args.adapter_a_only:
+        adapter_a_candidates = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
 
-    print_log("Training Adapter A(ROUGE Optimizer)")
-    adapter_a = train_adapter_a(
-        adapter_a, tokenizer, train_data, val_data, args.output_dir, args
-    )
+    elif args.adapter_b_only:
+        if not args.adapter_a_candidates_file or not os.path.exists(args.adapter_a_candidate_file):
+            raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
 
-    print_log("Generating Adapter A Candidates")
-    adapter_a_candidates = generate_adapter_a_candidates(
-        adapter_a, tokenizer, train_data, batch_size=args.batch_size, num_candidates=args.num_candidates
-    ) 
-    for i in range(len(train_data)):
-        print_log(f"=== Input {i+1} ===")
-        sample = train_data[i]
-        key = f"{sample['input']['premise']} ||| {sample['input']['proposition']}"
-        print_log(f"Input Prompt: {format_input_prompt(sample['input']['premise'], sample['input']['proposition'], sample['input']['label'])}")
-        print_log(f"Adapter A Candidates: {adapter_a_candidates.get(key, [])}")
-        if 'output' in sample:
-            print_log(f"Reference Output: {sample['output']}")
-        print_log("====================")
+        print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
+        adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
+        adapter_b_candidates = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
 
-    # Save Adapter A candidates as JSON
-    adapter_a_candidate_file = os.path.join(args.output_dir, "adapter_a_candidates.json")
-    save_candidate_to_json(adapter_a_candidates, adapter_a_candidate_file)
+        combine_candidates(adapter_a_candidates, adapter_b_candidates, args.output_dir)
 
-    ppl_model = None
-    if args.ppl_model:
-        print_log(f"Loading PPL model: {args.ppl_model}")
-        ppl_model, _ = load_model_and_tokenizer(args.ppl_model)
+    elif args.full_exp:
+        adapter_a_candidates = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+        adapter_b_candidates = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
 
-    print_log("Training Adapter B(Interactive BLEU, ROUGE-L, PPL Optimizer)")
-    adapter_b = train_adapter_b(
-        adapter_b, tokenizer, train_data, val_data, 
-        adapter_a_candidates, args.output_dir, args, ppl_model
-    )
-
-    print_log("Saving Adapter Models")
-    adapter_a.save_pretrained(os.path.join(args.output_dir, "adapter_a"))
-    adapter_b.save_pretrained(os.path.join(args.output_dir, "adapter_b"))
-
-    print_log("Generating Adapter B Candidates")
-    adapter_b_candidates = generate_adapter_b_candidates(
-        adapter_b, tokenizer, train_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
-    ) 
-
-    adapter_b_candidate_file = os.path.join(args.output_dir, "adapter_b_candidates.json")
-    save_candidate_to_json(adapter_b_candidates, adapter_b_candidate_file)
+        combine_candidates(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+    
     print_log("Training Complete")
     print_log(f"Models and candidates saved to {args.output_dir}")
 
