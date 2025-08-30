@@ -5,7 +5,7 @@ import os
 import wandb
 import numpy as np
 import torch
-from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt
+from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt, save_adapter_safely
 from data import load_data, save_candidate_to_json
 from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
 from train import train_adapter_a, train_adapter_b
@@ -75,7 +75,9 @@ def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
     save_candidate_to_json(adapter_a_train_candidates, adapter_a_train_file)
     save_candidate_to_json(adapter_a_val_candidates, adapter_a_val_file)
 
-    adapter_a.save_pretrained(os.path.join(args.output_dir, f"adapter_a_{timestamp}"))
+    # adapter_a.save_pretrained(os.path.join(args.output_dir, f"adapter_a_{timestamp}"))
+    adapter_a_model_dir = os.path.join(args.output_dir, f"adapter_a_{timestamp}")
+    save_success = save_adapter_safely(adapter_a, adapter_a_model_dir, model_name="adapter_a")
 
     print_log(f"Adapter A Model and Candidates saved to {args.output_dir}")
     print_log("Adapter A Training Complete")
@@ -117,7 +119,8 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
     save_candidate_to_json(adapter_b_train_candidates, adapter_b_train_file)
     save_candidate_to_json(adapter_b_val_candidates, adapter_b_val_file)
 
-    adapter_b.save_pretrained(os.path.join(args.output_dir, f"adapter_b_{timestamp}"))
+    adapter_b_model_dir = os.path.join(args.output_dir, f"adapter_b_{timestamp}")
+    save_success = save_adapter_safely(adapter_b, adapter_b_model_dir, model_name="adapter_b")
 
     print_log(f"Adapter B Model and Candidates saved to {args.output_dir}")
     print_log("Adapter B Training Complete")
