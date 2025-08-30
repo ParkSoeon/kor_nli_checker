@@ -17,7 +17,7 @@ def print_log(message: str, prefix: str ="LOG") -> None:
     print(f"[{timestamp}] {message}")
 
 def create_grpo_trainer(
-    model, tokenizer, dataset, reward_function: List[Callable],
+    model, tokenizer, dataset, reward_function: Callable,
     output_dir: str, learning_rate: float = 5e-5, batch_size: int = 5, epochs: int = 3, **kwargs
 ) -> GRPOTrainer:
 
@@ -54,7 +54,7 @@ def create_grpo_trainer(
         model=model,
         args=grpo_config,
         train_dataset=dataset,
-        reward_funcs=reward_function,
+        reward_funcs=[reward_function],
         processing_class=tokenizer
     )
 
@@ -106,9 +106,14 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
         
         num_completions = len(completions) if completions else 0
 
+        if num_completions == 0:
+            print_log("No completions received. Returning empty rewards list.")
+            return [0.0] * 5
+
         for i in range(num_completions):
             completion_text = completions[i] if i < len(completions) else ""
 
+            # Find for Reference Text
             ref_text = ""
 
             if reference and i < len(reference):
@@ -188,6 +193,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         for i in range(num_completions):
             completion_text = completions[i] if i < len(completions) else ""
 
+            # Create key to find Adapter A candidates
             if premise and proposition and i < len(premise) and i < len(proposition):
                 key = f"{premise[i]} ||| {proposition[i]}"
             else:
@@ -195,6 +201,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
 
             a_candidates = adapter_a_candidates.get(key, [])
 
+            # Find for Reference Text
             ref_text = ""
             if reference and i < len(reference):
                 ref_text = reference[i]
