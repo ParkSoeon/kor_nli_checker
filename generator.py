@@ -53,7 +53,7 @@ def generate_adapter_a_candidates(adapter_a, tokenizer, data_samples: List[Dict]
             key = f"{sample['input']['premise']} ||| {sample['input']['proposition']}"
             all_candidates[key] = candidates
 
-        return all_candidates
+    return all_candidates
 
 def generate_adapter_b_candidates(adapter_b, tokenizer, data_samples: List[Dict], batch_size=1, num_candidates=5, device: str = 'cuda') -> Dict[str, List[str]]:
     return generate_adapter_a_candidates(adapter_b, tokenizer, data_samples, batch_size, num_candidates, device)
