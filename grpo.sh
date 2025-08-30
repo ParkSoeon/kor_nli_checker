@@ -1,13 +1,14 @@
-wandb login --relogin {API_KEY}
+wandb login --relogin 8232a08ec8f9d8913ab5a533db16b5c5ced16fe7
 
-MODEL_NAME="/..output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300"
+MODEL_NAME="/home/nlplab/hdd1/hclt_ss/output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300"
 TRAIN_DATA="../dataset/함의분석_train.json"
 VAL_DATA="../dataset/함의분석_valid.json"
-OUTPUT_DIR="../output/grpo_$(date +%Y%m%d_%H%M%S)"
+BASE_OUTPUT_DIR="./output"
 PPL_MODEL_PATH="kakaocorp/kanana-1.5-8b-instruct-2505"
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 
 EPOCHS=2
-BATCH_SIZE=5
+BATCH_SIZE=3
 LEARNING_RATE=2e-5
 NUM_CANDIDATES=5
 
@@ -24,13 +25,14 @@ LORA_DROPOUT=0.05
 DEVICE="cuda"
 
 mkdir -p $OUTPUT_DIR
+OUTPUT_DIR="${BASE_OUTPUT_DIR}/grpo_${TIMESTAMP}"
 
 python main.py \
     --full_exp \
     --model_name $MODEL_NAME \
     --train_data $TRAIN_DATA \
     --val_data $VAL_DATA \
-    --output_dir $OUTPUT_DIR \
+    --output_dir ${OUTPUT_DIR}_full \
     --ppl_model $PPL_MODEL_PATH \
     --epochs $EPOCHS \
     --batch_size $BATCH_SIZE \
