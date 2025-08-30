@@ -6,8 +6,8 @@ VAL_DATA="../dataset/함의분석_valid.json"
 OUTPUT_DIR="../output/grpo_$(date +%Y%m%d_%H%M%S)"
 PPL_MODEL_PATH="kakaocorp/kanana-1.5-8b-instruct-2505"
 
-EPOCHS=3
-BATCH_SIZE=8
+EPOCHS=2
+BATCH_SIZE=5
 LEARNING_RATE=2e-5
 NUM_CANDIDATES=5
 
@@ -19,13 +19,14 @@ LAMBDA3=0.2  # ROUGE-L weight
 # LoRA configuration
 LORA_R=8
 LORA_ALPHA=16
-LORA_DROPOUT=0.1
+LORA_DROPOUT=0.05
 
 DEVICE="cuda"
 
 mkdir -p $OUTPUT_DIR
 
 python main.py \
+    --full_exp \
     --model_name $MODEL_NAME \
     --train_data $TRAIN_DATA \
     --val_data $VAL_DATA \
