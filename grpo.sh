@@ -1,4 +1,4 @@
-wandb login --relogin 8232a08ec8f9d8913ab5a533db16b5c5ced16fe7
+wandb login --relogin {API_KEY}
 
 MODEL_NAME="/home/nlplab/hdd1/hclt_ss/output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300"
 TRAIN_DATA="../dataset/함의분석_train.json"
