@@ -18,7 +18,7 @@ def print_log(message: str, prefix: str ="LOG") -> None:
 
 def create_grpo_trainer(
     model, tokenizer, dataset, reward_function: Callable,
-    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 5, epochs: int = 3, **kwargs
+    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 3, epochs: int = 3, **kwargs
 ) -> GRPOTrainer:
 
     data_collator = DataCollatorForLanguageModeling(
@@ -40,7 +40,7 @@ def create_grpo_trainer(
         report_to="wandb",
         dataloader_drop_last=True,
         
-        num_generations=5,
+        num_generations=3,
         # generation_batch_size=batch_size,
         max_prompt_length=230,
         max_completion_length=64,  
@@ -149,10 +149,10 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
     trainer.train()
     print_log(">> Finished Adapter A Training")
 
-    adapter_a_save_dir = f"{output_dir}/adapter_a_checkpoint_{get_timestamp()}"
-    os.makedirs(adapter_a_save_dir, exist_ok=True)
+    # adapter_a_save_dir = f"{output_dir}/adapter_a_checkpoint_{get_timestamp()}"
+    # os.makedirs(adapter_a_save_dir, exist_ok=True)
 
-    adapter_a.save_pretrained(adapter_a_save_dir)
+    # adapter_a.save_pretrained(adapter_a_save_dir)
 
     return adapter_a
 
@@ -249,8 +249,8 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
     trainer.train()
     print_log(">> Finished Adapter B Training")
 
-    adapter_b_save_dir = f"{output_dir}/adapter_b_checkpoint_{get_timestamp()}"
-    os.makedirs(adapter_b_save_dir, exist_ok=True)
-    adapter_b.save_pretrained(adapter_b_save_dir)
+    # adapter_b_save_dir = f"{output_dir}/adapter_b_checkpoint_{get_timestamp()}"
+    # os.makedirs(adapter_b_save_dir, exist_ok=True)
+    # adapter_b.save_pretrained(adapter_b_save_dir)
     
     return adapter_b
