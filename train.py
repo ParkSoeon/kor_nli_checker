@@ -17,8 +17,8 @@ def print_log(message: str, prefix: str ="LOG") -> None:
     print(f"[{timestamp}] {message}")
 
 def create_grpo_trainer(
-    model, tokenizer, dataset, reward_function: Callable,
-    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 8, epochs: int = 3, **kwargs
+    model, tokenizer, dataset, reward_function: List[Callable],
+    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 5, epochs: int = 3, **kwargs
 ) -> GRPOTrainer:
 
     data_collator = DataCollatorForLanguageModeling(
@@ -40,7 +40,7 @@ def create_grpo_trainer(
         report_to="wandb",
         dataloader_drop_last=True,
         
-        num_generations=8,
+        num_generations=5,
         # generation_batch_size=batch_size,
         max_prompt_length=230,
         max_completion_length=64,  
@@ -54,7 +54,7 @@ def create_grpo_trainer(
         model=model,
         args=grpo_config,
         train_dataset=dataset,
-        reward_funcs=[reward_function],
+        reward_funcs=reward_function,
         processing_class=tokenizer
     )
 
@@ -88,26 +88,43 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
     print_log(f"Reference Map Size: {len(reference_map)}")
 
     # Define a Reward Function based on ROUGE(for Adapter A)
-    def adapter_a_reward_function(samples: List[Dict[str, Any]], responses: List[str], prompts: Optional[List[str]] = None, **kwargs) -> List[float]:
+    def adapter_a_reward_function(**kwargs) -> List[float]:
 
         print_log(f"Reward Function called with kwargs keys: {list(kwargs.keys())}")
-        print_log(f"    Number of samples: {len(samples) if samples else 0}")
-        print_log(f"    Number of responses: {len(responses) if responses else 0}")
+
+        completions = kwargs.get('completions', [])
+        prompts = kwargs.get('prompts', [])
+        premise = kwargs.get('premise', [])
+        proposition = kwargs.get('proposition', [])
+        reference = kwargs.get('reference', [])
+
+        print_log(f"    Number of samples: {len(completions) if completions else 0}")
+        print_log(f"    Number of responses: {len(prompts) if prompts else 0}")
         print_log(f"    Additional kwargs: {list(kwargs.keys())}")
 
         rewards: List[float] = []
         
-        for i, (sample, response) in enumerate(zip(samples, responses)):
-            if isinstance(sample, dict):
-                premise = sample.get('premise', "")
-                proposition = sample.get('proposition', "")
-                key = f"{premise} ||| {proposition}"
-                reference = reference_map.get(key, sample.get('reference', ""))
-            else:
-                reference = ""
+        num_completions = len(completions) if completions else 0
 
-            reward = compute_adapter_a_reward(generated=response, references=reference)
+        for i in range(num_completions):
+            completion_text = completions[i] if i < len(completions) else ""
+
+            ref_text = ""
+
+            if reference and i < len(reference):
+                ref_text = reference[i]
+            elif premise and proposition and i < len(premise) and i < len(proposition):
+                key = f"{premise[i]} ||| {proposition[i]}"
+                ref_text = reference_map.get(key, "")
+
+            reward = compute_adapter_a_reward(generated=completion_text, references=ref_text, 
+                lambda1=args.lambda1,
+                lambda2=args.lambda2,
+                lambda3=args.lambda3
+            )
             rewards.append(reward)
+
+            print_log(f"Completion {i}: {completion_text} | Reference: {ref_text} | Reward: {reward:.4f}")
 
         print_log(f"Average Reward: {sum(rewards)/len(rewards) if rewards else 0:.4f}")
         return rewards
@@ -149,34 +166,44 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         reference_map[key] = sample.get("output", "")
 
     # Define a Reward Function based on Interactive BLEU, ROUGE-L, and PPL(for Adapter B)
-    def adapter_b_reward_function(samples: str, responses: str, **kwargs) -> float:
+    def adapter_b_reward_function(**kwargs) -> float:
         """
-        policy_outputs: List of completion dictionaries
         **kwargs: Contains additional info like prompts
         """
         print_log(f"Reward Function called with kwargs keys: {list(kwargs.keys())}")
+
+        completions = kwargs.get('completions', [])
+        prompts = kwargs.get('prompts', [])
+        premise = kwargs.get('premise', [])
+        proposition = kwargs.get('proposition', [])
+        reference = kwargs.get('reference', [])
+
         print_log(f"    Number of samples: {len(samples) if samples else 0}")
         print_log(f"    Number of responses: {len(responses) if responses else 0}")
 
         rewards: List[float] = []
         
-        for i, (sample, response) in enumerate(zip(samples, responses)):
-            if i >= len(samples):
-                rewards.append(0.0)
-                continue
+        num_completions = len(completions) if completions else 0\
 
-            if isinstance(sample, dict):
-                premise = sample.get('premise', "")
-                proposition = sample.get('proposition', "")
-                key = f"{premise} ||| {proposition}"
+        for i in range(num_completions):
+            completion_text = completions[i] if i < len(completions) else ""
+
+            if premise and proposition and i < len(premise) and i < len(proposition):
+                key = f"{premise[i]} ||| {proposition[i]}"
             else:
-                key = str(sample)
+                key = list(adapter_a_candidates.keys())[0] if adapter_a_candidates else ""
 
             a_candidates = adapter_a_candidates.get(key, [])
-            refernce = reference_map.get(key, sample.get('reference', ""))
+
+            ref_text = ""
+            if reference and i < len(reference):
+                ref_text = reference[i]
+            else:
+                ref_text = reference_map.get(key, "")
 
             reward = compute_adapter_b_reward(
-                response, refernce, a_candidates, model = ppl_model, tokenizer=tokenizer,
+                generated=completion_text, references=ref_text, adapter_a_cands=a_candidates, 
+                model = ppl_model, tokenizer=tokenizer,
                 lambda1=args.lambda1,
                 lambda2=args.lambda2,
                 lambda3=args.lambda3
@@ -184,7 +211,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
 
             print_log(f"=== Adapter B Reward {i} ===")
             print_log(f"    Generated: {response}")
-            print_log(f"    Reference: {refernce}")
+            print_log(f"    Reference: {reference}")
             print_log(f"    Adapter A Candidates: {a_candidates}")
             print_log(f"    Reward   : {reward:.4f}")
             
