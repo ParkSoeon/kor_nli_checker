@@ -148,6 +148,12 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
     print_log(">> Starting Adapter A Training")
     trainer.train()
     print_log(">> Finished Adapter A Training")
+
+    adapter_a_save_dir = f"{output_dir}/adapter_a_checkpoint_{get_timestamp()}"
+    os.makedirs(adapter_a_save_dir, exist_ok=True)
+
+    adapter_a.save_pretrained(adapter_a_save_dir)
+
     return adapter_a
 
 def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List[Dict], adapter_a_candidates: Dict[str, List[str]], output_dir: str, args, ppl_model=None) -> torch.nn.Module:
@@ -242,4 +248,9 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
     print_log(">> Starting Adapter B Training")
     trainer.train()
     print_log(">> Finished Adapter B Training")
+
+    adapter_b_save_dir = f"{output_dir}/adapter_b_checkpoint_{get_timestamp()}"
+    os.makedirs(adapter_b_save_dir, exist_ok=True)
+    adapter_b.save_pretrained(adapter_b_save_dir)
+    
     return adapter_b
