@@ -10,6 +10,7 @@ from data import load_data, save_candidate_to_json
 from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
 from train import train_adapter_a, train_adapter_b
 from datetime import datetime
+import copy
 
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -85,12 +86,19 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
     print_log("Running Adapter B in Experiment Mode")
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    ppl_model = None
+    if args.ppl_model:
+        print_log(f"Loading PPL model {args.ppl_model} for Adapter B reward")
+        ppl_model, _ = load_model_and_tokenizer(args.ppl_model, device=args.device)
+
     lora_config = create_lora_config(
         r=args.lora_r,
         alpha=args.lora_alpha,
         dropout=args.lora_dropout
     )
-    _, adapter_b = create_dual_adapters(base_model, lora_config)
+
+    fresh_base_model = copy.deepcopy(base_model)
+    _, adapter_b = create_dual_adapters(fresh_base_model, lora_config)
 
     adapter_b = train_adapter_b(
         adapter_b, tokenizer, train_data, val_data, 
