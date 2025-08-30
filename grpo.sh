@@ -1,6 +1,6 @@
 wandb login --relogin {API_KEY}
 
-MODEL_NAME="/home/nlplab/hdd1/hclt_ss/output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300"
+MODEL_NAME="/..output/kanana_1.5_8b_instruct_2505_20250827_014625/checkpoint-5300"
 TRAIN_DATA="../dataset/함의분석_train.json"
 VAL_DATA="../dataset/함의분석_valid.json"
 OUTPUT_DIR="../output/grpo_$(date +%Y%m%d_%H%M%S)"
