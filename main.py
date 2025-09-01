@@ -5,12 +5,14 @@ import os
 import wandb
 import numpy as np
 import torch
+import gc
 from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt, save_adapter_safely
-from data import load_data, save_candidate_to_json
+from data import load_data, save_candidate_to_json, load_candidates_from_json
 from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
 from train import train_adapter_a, train_adapter_b
 from datetime import datetime
 import copy
+from peft import get_peft_model, LoraConfig, TaskType, PeftModel
 
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -19,6 +21,11 @@ def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
+def clear_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
 def parse_args():
     parser = argparse.ArgumentParser(description="Dual Adapter GRPO Trainer")
 
@@ -29,6 +36,7 @@ def parse_args():
     parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
     
     parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
+    parser.add_argument('--batch_inf_size', type=int, default=1, help='Inference batch size for candidate generation')
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for optimizer')
     parser.add_argument('--num_candidates', type=int, default=5, help='Number of candidates to generate')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
@@ -43,10 +51,17 @@ def parse_args():
 
     parser.add_argument('--ppl_model', type=str, required=True, help='Model name for PPL calculation in Adapter B reward')
 
+    parser.add_argument('--train', action='store_true', help='Enable training mode')
+    parser.add_argument('--inf', action='store_true', help='Enable inference mode')
     parser.add_argument('--adapter_a_only', action='store_true', help='Enable experiment mode with reduced data and epochs for quick testing')
     parser.add_argument('--adapter_b_only', action='store_true', help='Enable experiment mode with reduced data and epochs for quick testing')
     parser.add_argument('--full_exp', action='store_true', help='Disable experiment mode for full training')
+    
+    parser.add_argument('--adapter_a_path', type=str, default=None, help='Path to pre-trained Adapter A model (for Adapter B training)')
+    parser.add_argument('--adapter_b_path', type=str, default=None, help='Path to pre-trained Adapter B model (for inference)')
     parser.add_argument('--adapter_a_candidate_file', type=str, default=None, help='Path to pre-generated Adapter A candidates JSON file')
+
+    # parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing to save memory')
 
     return parser.parse_args()
 
@@ -59,22 +74,24 @@ def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
         alpha=args.lora_alpha,
         dropout=args.lora_dropout
     )
-    adapter_a, _ = create_dual_adapters(base_model, lora_config)
+    # adapter_a, _ = create_dual_adapters(base_model, lora_config)
+    adapter_a = get_peft_model(base_model, lora_config)
 
     adapter_a = train_adapter_a(
         adapter_a, tokenizer, train_data, val_data, args.output_dir, args
     )
-    adapter_a_val_candidates = generate_adapter_a_candidates(
-        adapter_a, tokenizer, val_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
-    )
-
-    os.mkdir(args.output_dir, exist_ok=True)
-    adapter_a_train_file = os.path.join(args.output_dir, "adapter_a_val_candidates_{timestamp}.json")
-    save_candidate_to_json(adapter_a_train_candidates, adapter_a_train_file)
 
     adapter_a_model_dir = os.path.join(args.output_dir, f"adapter_a_final_{timestamp}")
     os.makedirs(adapter_a_model_dir, exist_ok=True)
     adapter_a.save_pretrained(adapter_a_model_dir)
+
+    # adapter_a_val_candidates = generate_adapter_a_candidates(
+    #     adapter_a, tokenizer, val_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
+    # )
+
+    # os.mkdir(args.output_dir, exist_ok=True)
+    # adapter_a_train_file = os.path.join(args.output_dir, "adapter_a_val_candidates_{timestamp}.json")
+    # save_candidate_to_json(adapter_a_train_candidates, adapter_a_train_file)
 
     # # adapter_a.save_pretrained(os.path.join(args.output_dir, f"adapter_a_{timestamp}"))
     # adapter_a_model_dir = os.path.join(args.output_dir, f"adapter_a_{timestamp}")
@@ -83,7 +100,29 @@ def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
     print_log(f"Adapter A Model and Candidates saved to {args.output_dir}")
     print_log("Adapter A Training Complete")
 
-    return adapter_a_candidates
+    if not args.train:
+        del adapter_a
+        clear_memory()
+        return adapter_a_model_dir
+
+    return adapter_a, adapter_a_model_dir
+
+def run_adapter_a_inference(args, base_model, tokenizer, data):
+    timestamp = get_timestamp()
+
+    adapter_a_candidates = generate_adapter_a_candidates(
+        model_path, tokenizer, data,
+        batch_size=args.batch_inf_size,
+        num_candidates=args.num_candidates,
+        device=args.device,
+        use_model_path=True
+    )
+
+    candidate_file = os.path.join(args.output_dir, f"adapter_a_candidates_inference_{timestamp}.json")
+    save_candidate_to_json(adapter_a_candidates, candidate_file)
+    print_log(f"Adapter A candidates saved to {candidate_file}")
+
+    return adapter_a_candidates, candidate_file
 
 def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates):
     print_log("Running Adapter B in Experiment Mode")
@@ -101,24 +140,23 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
         dropout=args.lora_dropout
     )
 
-    fresh_base_model = copy.deepcopy(base_model)
-    _, adapter_b = create_dual_adapters(fresh_base_model, lora_config)
+    adapter_b = get_peft_model(copy.deepcopy(base_model), lora_config)
 
     adapter_b = train_adapter_b(
         adapter_b, tokenizer, train_data, val_data, 
         adapter_a_candidates, args.output_dir, args, ppl_model
     )
 
-    print_log("Generating Adapter B Candidates for ALL data")
-    adapter_b_candidates = generate_adapter_b_candidates(
-        adapter_b, tokenizer, val_data, 
-        batch_size=args.batch_size, 
-        num_candidates=args.num_candidates, 
-        device=args.device
-    )
+    # print_log("Generating Adapter B Candidates for ALL data")
+    # adapter_b_candidates = generate_adapter_b_candidates(
+    #     adapter_b, tokenizer, val_data, 
+    #     batch_size=args.batch_size, 
+    #     num_candidates=args.num_candidates, 
+    #     device=args.device
+    # )
 
-    adapter_b_val_file = os.path.join(args.output_dir, f"adapter_b_val_candidates_{timestamp}.json")
-    save_candidate_to_json(adapter_b_candidates, adapter_b_val_file)
+    # adapter_b_val_file = os.path.join(args.output_dir, f"adapter_b_val_candidates_{timestamp}.json")
+    # save_candidate_to_json(adapter_b_candidates, adapter_b_val_file)
 
     adapter_b_model_dir = os.path.join(args.output_dir, f"adapter_b_final_{timestamp}")
     os.makedirs(adapter_b_model_dir, exist_ok=True)
@@ -127,10 +165,37 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
     print_log(f"Adapter B Model and Candidates saved to {args.output_dir}")
     print_log("Adapter B Training Complete")
 
-    return adapter_b_candidates
+    if ppl_model:
+        del ppl_model
+        clear_memory()
 
-def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, output_dir, timestamp):
+    if not args.train:
+        del adapter_b
+        clear_memory()
+        return adapter_b_model_dir
+
+    return adapter_b, adapter_b_model_dir
+
+def run_adapter_b_inference(args, base_model, tokenizer, data):
+    timestamp = get_timestamp()
+
+    adapter_b_candidates = generate_adapter_b_candidates(
+        args.adapter_b_path, tokenizer, data,
+        batch_size=args.batch_inf_size,
+        num_candidates=args.num_candidates,
+        device=args.device,
+        use_model_path=True
+    )
+
+    candidate_file = os.path.join(args.output_dir, f"adapter_b_candidates_inference_{timestamp}.json")
+    save_candidate_to_json(adapter_b_candidates, candidate_file)
+    print_log(f"Adapter B candidates saved to {candidate_file}")
+
+    return adapter_b_candidates, candidate_file
+
+def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, output_dir):
     print_log("Combining Adapter A and Adapter B Candidates for Reranking")
+    timestamp = get_timestamp()
 
     combined_candidates = {}
 
@@ -161,6 +226,7 @@ def main():
     print_log("Starting Dual Adapter GRPO Training")
     base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
 
+    # Load datasets
     print_log("Loading Data")
     train_data = load_data(args.train_data)
     val_data = load_data(args.val_data)
@@ -177,29 +243,82 @@ def main():
             print_log(f"Sample Reference Output: {sample['output']}")
     print_log("====================")
 
-    if args.adapter_a_only:
-        adapter_a_candidates, adapter_a_model_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+    base_model = None
+    tokenizer = None
 
-    elif args.adapter_b_only:
-        if not args.adapter_a_candidates_file or not os.path.exists(args.adapter_a_candidate_file):
-            raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
+    if not args.inf:
+        print_log("Loading Base Model for Training")
+        base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
+    else:
+        print_log("Inference Mode: Skipping Base Model Loading")
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
-        print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
-        adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
-        adapter_b_candidates, adapter_b_model_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+    if args.train:
+        print_log("Training Mode Enabled")
 
-        combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+        if args.adapter_a_only:
+            adapter_a_candidates, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
 
-    elif args.full_exp:
-        adapter_a_candidates, adapter_a_model_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
-        adapter_b_candidates, adapter_b_model_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+        elif args.adapter_b_only:
+            if not args.adapter_a_candidates_file or not os.path.exists(args.adapter_a_candidate_file):
+                raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
 
-        combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+            print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
+            adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+
+        elif args.full_exp:
+            adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+
+            del adapter_a
+            clear_memory()
+
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
     
-    print_log("Training Complete")
+    elif args.inf:
+        print_log("Inference Mode Enabled")
+
+        if args.adapter_a_only:
+            adapter_a_candidates, _ = run_adapter_a_inference(args, args.adapter_a_path, tokenizer, val_data)
+
+        elif args.adapter_b_only:
+            adapter_b_candidates, _ = run_adapter_b_inference(args, args.adapter_b_path, tokenizer, val_data)
+
+        elif args.full_exp:
+            adapter_a_candidates, _ = run_adapter_a_inference(args, args.adapter_a_path, tokenizer, val_data)
+            adapter_b_candidates, _ = run_adapter_b_inference(args, args.adapter_b_path, tokenizer, val_data)
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+    
+    else:
+        print_log("Full Pipeline Mode Enabled")
+
+        if args.adapter_a_only:
+            adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+            clear_memory()
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, val_data)
+
+        elif args.full_exp:
+            adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+            clear_memory()
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
+
+            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            clear_memory()
+            adapter_b_candidates, _ = run_adapter_b_inference(args, adapter_b_dir, tokenizer, val_data)
+
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+
+    print_log("Pipeline Completed")
     print_log(f"Models and candidates saved to {args.output_dir}")
 
-    wandb.finish()
+    if not args.inf:
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
