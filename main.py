@@ -7,12 +7,13 @@ import numpy as np
 import torch
 import gc
 from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt, save_adapter_safely
-from data import load_data, save_candidate_to_json, load_candidates_from_json
+from data import load_data, save_candidate_to_format, load_candidates_from_json, save_candidate_to_json, save_combined_cadidates
 from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
 from train import train_adapter_a, train_adapter_b
 from datetime import datetime
 import copy
 from peft import get_peft_model, LoraConfig, TaskType, PeftModel
+from transformers import AutoTokenizer
 
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -67,7 +68,7 @@ def parse_args():
 
 def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
     print_log("Running Adapter A in Experiment Mode")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = get_timestamp()
 
     lora_config = create_lora_config(
         r=args.lora_r,
@@ -85,19 +86,7 @@ def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
     os.makedirs(adapter_a_model_dir, exist_ok=True)
     adapter_a.save_pretrained(adapter_a_model_dir)
 
-    # adapter_a_val_candidates = generate_adapter_a_candidates(
-    #     adapter_a, tokenizer, val_data, batch_size=args.batch_size, num_candidates=args.num_candidates, device=args.device
-    # )
-
-    # os.mkdir(args.output_dir, exist_ok=True)
-    # adapter_a_train_file = os.path.join(args.output_dir, "adapter_a_val_candidates_{timestamp}.json")
-    # save_candidate_to_json(adapter_a_train_candidates, adapter_a_train_file)
-
-    # # adapter_a.save_pretrained(os.path.join(args.output_dir, f"adapter_a_{timestamp}"))
-    # adapter_a_model_dir = os.path.join(args.output_dir, f"adapter_a_{timestamp}")
-    # save_success = save_adapter_safely(adapter_a, adapter_a_model_dir, model_name="adapter_a")
-
-    print_log(f"Adapter A Model and Candidates saved to {args.output_dir}")
+    print_log(f"Adapter A Model saved to {args.output_dir}")
     print_log("Adapter A Training Complete")
 
     if not args.train:
@@ -107,15 +96,16 @@ def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
 
     return adapter_a, adapter_a_model_dir
 
-def run_adapter_a_inference(args, base_model, tokenizer, data):
+def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
     timestamp = get_timestamp()
 
     adapter_a_candidates = generate_adapter_a_candidates(
-        model_path, tokenizer, data,
+        adapter_a_path, tokenizer, data,
         batch_size=args.batch_inf_size,
         num_candidates=args.num_candidates,
         device=args.device,
-        use_model_path=True
+        use_model_path=True,
+        base_model_name=args.model_name
     )
 
     candidate_file = os.path.join(args.output_dir, f"adapter_a_candidates_inference_{timestamp}.json")
@@ -176,15 +166,16 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
 
     return adapter_b, adapter_b_model_dir
 
-def run_adapter_b_inference(args, base_model, tokenizer, data):
+def run_adapter_b_inference(args, adapter_b_path, tokenizer, data):
     timestamp = get_timestamp()
 
     adapter_b_candidates = generate_adapter_b_candidates(
-        args.adapter_b_path, tokenizer, data,
+        adapter_b_path, tokenizer, data,
         batch_size=args.batch_inf_size,
         num_candidates=args.num_candidates,
         device=args.device,
-        use_model_path=True
+        use_model_path=True,
+        base_model_name=args.model_name
     )
 
     candidate_file = os.path.join(args.output_dir, f"adapter_b_candidates_inference_{timestamp}.json")
@@ -251,14 +242,13 @@ def main():
         base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
     else:
         print_log("Inference Mode: Skipping Base Model Loading")
-        from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
     if args.train:
         print_log("Training Mode Enabled")
 
         if args.adapter_a_only:
-            adapter_a_candidates, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+            adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
 
         elif args.adapter_b_only:
             if not args.adapter_a_candidates_file or not os.path.exists(args.adapter_a_candidate_file):
@@ -268,7 +258,7 @@ def main():
             adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
             adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
 
-            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+            # combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
 
         elif args.full_exp:
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
