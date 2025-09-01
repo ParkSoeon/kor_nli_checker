@@ -11,10 +11,76 @@ def load_data(dataset: str) -> List[Dict[str, Any]]:
         data = json.load(f)
     return data
 
+def save_candidate_to_format(candidates: Dict[str, List[str]], original_data: List[Dict], output_dir: str, adapter_name: str = "adapter"):
+
+    result_data = []
+
+    for sample in original_data:
+        premise = sample['input']['premise']
+        proposition = sample['input']['proposition']
+        label = sample['input']['label']
+        key = f"{premise}|||{proposition}"
+
+        new_sample = {
+            "id": sample["id"],
+            "input": sample["input"],
+            "output": {}
+        }
+
+        candidate_list = candidates.get(key, [])
+        for idx, candidate in enumerate(candidate_list, 1):
+            new_sample["output"][f"{adapter_name}_candidate_{idx}"] = candidate
+
+        if not candidate_list:
+            for i in range(5):
+                new_sample["output"][f"{adapter_name}_candidate_{i+1}"] = ""
+
+        result_data.append(new_sample)
+
+    with open(output_dir, 'w', encoding='utf-8') as f:
+        json.dump(result_data, f, ensure_ascii=False, indent=4)
+
+    print_log(f"Saved candidates to {output_dir}")
+
+def save_combined_cadidates(adapter_a_candidates: Dict[str, List[str]], adapter_b_candidates: Dict[str, List[str]], original_data: List[Dict], output_dir: str):
+    result_data = []
+
+    for sample in original_data:
+        premise = sample['input']['premise']
+        proposition = sample['input']['proposition']
+        key = f"{premise}|||{proposition}"
+
+        new_sample = { 
+            "id": sample["id"],
+            "input": sample["input"],
+            "output": {}
+        }
+
+        # Adapter A Candidates -> Fill empty A candidates with ""(exception handling)
+        candidates_a = adapter_a_candidates.get(key, [])
+        for i, candidate in enumerate(candidates_a, 1):
+            new_sample["output"][f"adapter_a_candidate_{i}"] = candidate
+        for i in range(len(candidates_a)+1, 6):
+            new_sample["output"][f"adapter_a_candidate_{i+1}"] = ""
+
+        # Adapter B Candidates -> Fill empty B candidates with ""
+        candidates_b = adapter_b_candidates.get(key, [])
+        for i, candidate in enumerate(candidates_b, 1):
+            new_sample["output"][f"adapter_b_candidate_{i}"] = candidate
+        for i in range(len(candidates_b)+1, 6):
+            new_sample["output"][f"adapter_b_candidate_{i+1}"] = ""
+
+        result_data.append(new_sample)
+    with open(output_dir, 'w', encoding='utf-8') as f:
+        json.dump(result_data, f, ensure_ascii=False, indent=4)
+
+    print_log(f"Saved combined candidates to {output_dir}")
+
+
 def save_candidate_to_json(candidates: Dict[str, List[str]], output_dir: str):
     with open(output_dir, 'w', encoding='utf-8') as f:
         json.dump(candidates, f, ensure_ascii=False, indent=4)
-
+        
 def load_candidates_from_json(candidate_file: str) -> Dict[str, List[str]]:
     with open(candidate_file, 'r', encoding='utf-8') as f:
         candidates = json.load(f)
