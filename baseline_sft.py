@@ -131,6 +131,17 @@ class CustomCallback(TrainerCallback):
         self.best_dir = None
         self.best_step = -1
 
+    def clean_and_extract_text(self, text):
+        text = text.strip()
+
+        if "[설명]" in text:
+            explanation_start = text.find("[설명]") + len("[설명]")
+            explanation = text[explanation_start:].strip()
+        else:
+            explanation = text
+
+        return explanation
+        
     def on_evaluate(self, args, state, control, **kwargs):
         print_log("Starting evaluation...")
 
