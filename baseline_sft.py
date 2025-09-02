@@ -73,7 +73,6 @@ def get_parse():
     parser.add_argument("--logging_steps", type=int, default=50, help="Logging steps.")
     parser.add_argument("--save_steps", type=int, default=100, help="Save steps.")
     parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation steps.")
-    parser.add_argument("--save_total_limit", type=int, default=2, help="Save total limit.")
     parser.add_argument("--fp16", action="store_true", help="Use fp16 training.")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps.")
 
@@ -234,6 +233,8 @@ class CustomCallback(TrainerCallback):
         
         model.train()
         
+        return eval_results
+
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
         
@@ -454,7 +455,7 @@ class CustomCallback(TrainerCallback):
             "rouge2": rouge_results['rouge2'],
             "rougeL": rouge_results['rougeL'],
             "combined_rouge_score": combined_score,
-            "num_examples": len(results),
+            "num_examples": len(generated_result),
             "num_candidates_per_example": self.args.num_cands
         }
         
@@ -569,9 +570,9 @@ def train_model(args):
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         eval_strategy="steps",
-        save_total_limit=args.save_total_limit,
         load_best_model_at_end=False,
-        metric_for_best_model="eval_loss",
+        # metric_for_best_model="eval_combined_score",
+        # greater_is_better=True,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
@@ -589,7 +590,7 @@ def train_model(args):
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
-        callbacks=[rouge_callback, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
+        callbacks=[rouge_callback],
     )
     
     print_log("Starting training...")
