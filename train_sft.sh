@@ -1,0 +1,37 @@
+
+python src/generator.py \
+    --model_name "kakaocorp/kanana-1.5-8b-instruct-2505" \
+    --train \
+    --test \
+    --wandb_project "2025HCLT" \
+    --model_type "causal" \
+    --train_path "./dataset/함의분석_train.json" \
+    --dev_path "./dataset/함의분석_valid.json" \
+    --test_path "./dataset/함의분석_test.json" \
+    --output_dir "./output" \
+    --use_lora \
+    --lora_r 8 \
+    --lora_alpha 16 \
+    --lora_dropout 0.1 \
+    --max_input_length 2000 \
+    --max_output_length 100 \
+    --max_new_tokens 60 \
+    --per_device_train_batch_size 1 \
+    --per_device_eval_batch_size 1 \
+    --num_train_epochs 7 \
+    --learning_rate 2e-5 \
+    --warmup_steps 500 \
+    --logging_steps 50 \
+    --save_steps 100 \
+    --eval_steps 100 \
+    --num_fewshot 3 \
+    --fewshot_seed 42 \
+    --seed 42 \
+    --fp16 \
+    --use_chat_template \
+    --temperature 0.7 \
+    --top_k 50 \
+    --top_p 0.95 \
+    --do_sample \
+    --num_beams 3 \
+    --num_cands 5
