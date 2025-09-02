@@ -62,7 +62,7 @@ def get_parse():
     parser.add_argument("--test_path", type=str, required=True, help="Path to the test file.")
     parser.add_argument("--output_dir", type=str, default="./output", help="Output directory.")
     parser.add_argument("--max_input_length", type=int, default=512, help="Maximum input length.")
-    parser.add_argument("--max_output_length", type=int, default=128, help="Maximum target length.")
+    parser.add_argument("--max_output_length", type=int, default=80, help="Maximum target length.")
     
     # Training arguments
     parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Training batch size per device.")
@@ -169,9 +169,35 @@ class CustomCallback(TrainerCallback):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
 
-            targets = batch_data['output']
-            if not isinstance(targets, list):
-                targets = [targets]
+            # targets = batch_data['output']
+            # if not isinstance(targets, list):
+            #     targets = [targets]
+
+            targets = []
+            if 'output' in batch_data:
+                raw_targets = batch_data['output']
+                if isinstance(raw_targets, list):
+                    targets = [str(tar) for tar in raw_targets]
+                else:
+                    targets = [str(raw_targets)]
+            elif 'labels' in batch_data:
+                labels = batch_data['labels']
+                if isinstance(labels, torch.Tensor):
+                    for label_ids in range(labels.size(0)):
+                        label_tokens = label[i]
+                        
+                        valid_tokens = label_tokens[label_tokens != -100]
+
+                        if len(valid_tokens) > 0:
+                            decoded = self.tokenizer.decode(valid_tokens, skip_special_tokens=True).strip()
+                            targets.append(decoded)
+                        else:
+                            targets.append("")
+
+                else:
+                    targets = [str(labels)] if not isinstance(labels, list) else [str(lab) for lab in labels]
+            else:
+                targets = [""]
 
             # target = batch_data['output'][0] if isinstance(batch_data['output'], list) else batch_data['output']
             # print_log(f"batch_data keys: {batch_data.keys()}") # batch_data keys: dict_keys(['input_ids', 'attention_mask', 'id', 'premise', 'proposition', 'label'])
@@ -378,40 +404,30 @@ class CustomCallback(TrainerCallback):
                 if key in data:
                     value = data[key]
                     if isinstance(value, list) and len(value) > 0:
-                        return value[0]
+                        return str(value[0]) if value[0] is not None else default_value
                     elif isinstance(value, torch.Tensor):
                         if value.numel() == 1: 
-                            return value.item()
-                        return str(value[0])
+                            return str(value.item())
+                        elif len(value) > 0:
+                            return str(value[0])
+
                     return str(value) if value is not None else default_value
 
-                if 'input' in data:
-                    input_data = data['input']
-                    if isinstance(input_data, list) and len(input_data) > 0:
-                        input_data = input_data[0]
-                    
-                    if isinstance(input_data, dict) and key in input_data:
-                        value = input_data[key]
-                        if isinstance(value, list) and len(value) > 0:
-                            return value[0]
-                        else:
-                            return str(value) if value is not None else default_value
-
-                return default_value if batch_index is None else f"{default_value}_{batch_index}"
+                return default_value
 
             # Extract other information from batch
             example_id = extract_keys(batch_data, 'id', '', batch_index)
             premise = extract_keys(batch_data, 'premise', '')
             proposition = extract_keys(batch_data, 'proposition', '')
             label = extract_keys(batch_data, 'label', '')
-            # target = extract_keys(batch_data, 'output', '')
+            target = extract_keys(batch_data, 'output', '')
 
             print_log(f"Processing Example {batch_index+1}:")
             print_log(f"[Extracted]  ID: {example_id}")
             print_log(f"[Extracted]  Premise: {premise}")
             print_log(f"[Extracted]  Proposition: {proposition}")
             print_log(f"[Extracted]  Label: {label}")
-            # print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
+            print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
 
             candidates = self.generate_candidates(model, tokenizer, input_ids, attention_mask)
 
@@ -425,7 +441,7 @@ class CustomCallback(TrainerCallback):
                 "premise": str(premise) if premise is not None else "",
                 "proposition": str(proposition) if proposition is not None else "",
                 "label": str(label) if label is not None else "",
-                # "output": str(target) if target is not None else "",
+                "output": str(target) if target is not None else "",
                 "candidates": [str(candidate) for candidate in candidates],
                 "best_candidate": str(best_candidate)
             }
@@ -443,15 +459,16 @@ class CustomCallback(TrainerCallback):
         print_log(f"Generated {len(results)} results")
         return results
 
-    def evaluate_results(self, generated_result):
+    def evaluate_results(self, generated_results):
         print_log("Evaluating results...")
         
-        targets = [result['output'] for result in generated_result]
-        predictions = [result['best_candidate'] for result in generated_result]
+        targets = [result['output'] for result in generated_results]
+        predictions = [result['best_candidate'] for result in generated_results]
         
         rouge_results = self.rouge_metric.compute(
             predictions=predictions,
             references=targets,
+            use_stemmer=False
         )
         
         combined_score = (
@@ -468,6 +485,12 @@ class CustomCallback(TrainerCallback):
             "num_examples": len(results),
             "num_candidates_per_example": self.args.num_cands
         }
+
+        print_log("=== Evaluation Complete ===")
+        print_log(f"  ROUGE-1: {rouge_results['rouge1']:.4f}")
+        print_log(f"  ROUGE-2: {rouge_results['rouge2']:.4f}")
+        print_log(f"  ROUGE-L: {rouge_results['rougeL']:.4f}")
+        print_log(f"  Combined ROUGE Score: {combined_score:.4f}")
         
         return eval_results
     
@@ -580,10 +603,11 @@ def train_model(args):
         save_steps=args.save_steps,
         # eval_steps=args.eval_steps,
         # eval_strategy="steps",
-        eval_strategy="no",
+        eval_strategy="steps",
         save_total_limit=args.save_total_limit,
-        load_best_model_at_end=False,
-        metric_for_best_model="eval_loss",
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_combioned_score",
+        greater_is_better=True,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
@@ -710,6 +734,8 @@ def main():
         inference_callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
         inference_results = inference_callback.generate_candidates_optimized(model, tokenizer, test_dataset)
         
+        eval_results = inference_callback.evaluate_results(inference_results)
+
         # Save results
         timestamp = get_timestamp()
         model_id = get_model_id_from_path(args.model_name)
