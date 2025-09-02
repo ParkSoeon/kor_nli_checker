@@ -47,6 +47,10 @@ def print_log(message, prefix="LOG"):
 def get_model_id_from_path(model_path):
     return model_path.split('/')[-1].replace('-', '_')
 
+def clear_memory():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
 def get_parse():
     parser = argparse.ArgumentParser(description="Generate text using a pre-trained model.")
     
@@ -183,7 +187,7 @@ class CustomCallback(TrainerCallback):
             elif 'labels' in batch_data:
                 labels = batch_data['labels']
                 if isinstance(labels, torch.Tensor):
-                    for label_ids in range(labels.size(0)):
+                    for i in range(labels.size(0)):
                         label_tokens = labels[i]
                         
                         valid_tokens = label_tokens[label_tokens != -100]
@@ -270,6 +274,9 @@ class CustomCallback(TrainerCallback):
         print_log(f"  Combined Score: {combined_score:.4f}")
         
         model.train()
+
+        if hasattr(control, 'should_save') and control.should_save:
+            kwargs.get('logs', {}).update(eval_results)
         
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
@@ -456,7 +463,7 @@ class CustomCallback(TrainerCallback):
                 for i, candidate in enumerate(candidates[:3]):
                     print_log(f"  Candidate {i + 1}: {candidate}")
         
-        print_log(f"Generated {len(generated_result)} results")
+        print_log(f"Generated {len(results)} results")
         return results
 
     def evaluate_results(self, generated_results):
@@ -482,7 +489,7 @@ class CustomCallback(TrainerCallback):
             "rouge2": rouge_results['rouge2'],
             "rougeL": rouge_results['rougeL'],
             "combined_rouge_score": combined_score,
-            "num_examples": len(results),
+            "num_examples": len(generated_result),
             "num_candidates_per_example": self.args.num_cands
         }
 
@@ -589,6 +596,10 @@ def train_model(args):
     os.makedirs(output_dir, exist_ok=True)
     print_log(f"Output directory: {output_dir}")
     print_log(f"Run name: {run_name}")
+
+    def compute_metrics(eval_pred):
+        predictions, labels = eval_pred
+        return {"DUMMY METRIC": 0.0}
     
     # Training arguments
     training_args = TrainingArguments(
@@ -601,13 +612,9 @@ def train_model(args):
         logging_dir=os.path.join(output_dir, "logs"),
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
-        # eval_steps=args.eval_steps,
-        # eval_strategy="steps",
         eval_strategy="steps",
         save_total_limit=args.save_total_limit,
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_combined_score",
-        greater_is_better=True,
+        load_best_model_at_end=False,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=True,
@@ -625,6 +632,7 @@ def train_model(args):
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
         callbacks=[rouge_callback]#, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
     )
     
