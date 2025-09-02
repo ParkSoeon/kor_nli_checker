@@ -184,7 +184,7 @@ class CustomCallback(TrainerCallback):
                 labels = batch_data['labels']
                 if isinstance(labels, torch.Tensor):
                     for label_ids in range(labels.size(0)):
-                        label_tokens = label[i]
+                        label_tokens = labels[i]
                         
                         valid_tokens = label_tokens[label_tokens != -100]
 
@@ -456,7 +456,7 @@ class CustomCallback(TrainerCallback):
                 for i, candidate in enumerate(candidates[:3]):
                     print_log(f"  Candidate {i + 1}: {candidate}")
         
-        print_log(f"Generated {len(results)} results")
+        print_log(f"Generated {len(generated_result)} results")
         return results
 
     def evaluate_results(self, generated_results):
@@ -606,11 +606,11 @@ def train_model(args):
         eval_strategy="steps",
         save_total_limit=args.save_total_limit,
         load_best_model_at_end=True,
-        metric_for_best_model="eval_combioned_score",
+        metric_for_best_model="eval_combined_score",
         greater_is_better=True,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        remove_unused_columns=False,
+        remove_unused_columns=True,
         report_to="wandb",
         dataloader_pin_memory=False,  # For dynamic padding
     )
