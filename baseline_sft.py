@@ -204,7 +204,6 @@ class CustomCallback(TrainerCallback):
             use_stemmer=False
         )
         
-        bertscore_f1 = 0.0  # Placeholder
         
         combined_score = (
             rouge_results['rouge1'] * self.args.rouge1_weight +
@@ -212,11 +211,18 @@ class CustomCallback(TrainerCallback):
             rouge_results['rougeL'] * self.args.rougeL_weight
         )
         
+        logs = kwargs.get('logs', {})
+        logs.update({
+            "eval_rouge1": rouge_results['rouge1'],
+            "eval_rouge2": rouge_results['rouge2'],
+            "eval_rougeL": rouge_results['rougeL'],
+            "eval_combined_score": combined_score,
+        })
+
         eval_results = {
             "eval_rouge1": rouge_results['rouge1'],
             "eval_rouge2": rouge_results['rouge2'],
             "eval_rougeL": rouge_results['rougeL'],
-            "eval_bertscore_f1": bertscore_f1,
             "eval_combined_score": combined_score,
             "eval_step": state.global_step
         }
@@ -252,17 +258,6 @@ class CustomCallback(TrainerCallback):
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
         
-        # if self.best_checkpoint and os.path.exists(self.best_checkpoint):
-        #     print_log(f"Loading best checkpoint: {self.best_checkpoint}")
-        #     if self.args.use_lora:
-        #         model = PeftModel.from_pretrained(model, self.best_checkpoint)
-        #     else:
-        #         checkpoint_dir = os.path.join(self.best_checkpoint, "adapter_model.bin")
-        #         if os.path.exists(checkpoint_dir):
-        #             model.load_state_dict(torch.load(checkpoint_dir, map_location=model.device))
-        #         else:
-        #             print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
-
         if self.best_dir and os.path.exists(self.best_dir):
             print_log(f"Loading best model from: {self.best_dir}")
             if self.args.use_lora:
@@ -617,9 +612,7 @@ def train_model(args):
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         eval_strategy="steps",
-        load_best_model_at_end=True,
-        metric_for_best_model="eval_combined_score",
-        greater_is_better=True,
+        load_best_model_at_end=False,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
@@ -674,8 +667,8 @@ def train_model(args):
     
     return model, tokenizer, final_results, final_eval
 
-    print_log(f"Training complete. Model saved to {output_dir}")
-    return model, tokenizer, None, None
+    # print_log(f"Training complete. Model saved to {output_dir}")
+    # return model, tokenizer, None, None
 
 def main():
     args = get_parse()
