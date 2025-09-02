@@ -204,9 +204,12 @@ class CustomCallback(TrainerCallback):
                 print_log(f"Sample {i} - Input text: {input_text}")
                 print_log(f"Sample {i} - Target: {targets[i] if i < len(targets) else 'N/A'}")
                 print_log(f"Sample {i} - Generated text: {generated_text}")
+
+                cleaned_generated_text = self.clean_and_extract_text(generated_text)
+                print_log(f"Sample {i} - Cleaned Generated text: {cleaned_generated_text}")
                 print_log("="*50)
                 
-                predictions.append(generated_text)
+                predictions.append(cleaned_generated_text)
                 references.append(targets[i] if i < len(targets) else "")
         
         rouge_results = self.rouge_metric.compute(
