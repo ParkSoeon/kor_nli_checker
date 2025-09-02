@@ -224,18 +224,87 @@ class DynamicDataCollator:
         self.tokenizer = tokenizer
         self.model_type = model_type
         self.pad_to_multiple_of = pad_to_multiple_of
-        
-        if model_type == "causal":
-            self.base_collator = DataCollatorForLanguageModeling(
-                tokenizer=tokenizer,
+
+    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not any("labels" in feature for feature in features):
+            return self.collate_inference(features)
+        # Handle training mode (features with labels)
+        else:
+            return self.collate_training(features)
+
+    def collate_training(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+
+        tensor_features = []
+
+        for feature in features:
+            tensor_feature = {
+                "input_ids": feature["input_ids"],
+                "attention_mask": feature["attention_mask"],
+                "labels": feature["labels"]
+            }
+            tensor_features.append(tensor_feature)
+
+        if self.model_type == "causal":
+            base_collator = DataCollatorForLanguageModeling(
+                tokenizer=self.tokenizer,
                 mlm=False,
-                pad_to_multiple_of=pad_to_multiple_of
+                pad_to_multiple_of=self.pad_to_multiple_of
             )
         else:
-            self.base_collator = DataCollatorForSeq2Seq(
-                tokenizer=tokenizer,
-                pad_to_multiple_of=pad_to_multiple_of
+            base_collator = DataCollatorForSeq2Seq(
+                tokenizer=self.tokenizer,
+                pad_to_multiple_of=self.pad_to_multiple_of
             )
+
+        return base_collator(tensor_features)
+
+        # # Extract sequences
+        # input_ids = [feature["input_ids"] for feature in features]
+        # attention_masks = [feature["attention_mask"] for feature in features] 
+        # labels = [feature["labels"] for feature in features]
+        
+        # # Find max length in batch
+        # max_length = max(len(seq) for seq in input_ids)
+        
+        # # Round up to multiple of pad_to_multiple_of if specified
+        # if self.pad_to_multiple_of:
+        #     max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
+        
+        # # Pad sequences
+        # padded_input_ids = []
+        # padded_attention_masks = []
+        # padded_labels = []
+        
+        # for i in range(len(features)):
+        #     seq_len = len(input_ids[i])
+        #     pad_len = max_length - seq_len
+            
+        #     # Pad input_ids
+        #     padded_seq = torch.cat([
+        #         input_ids[i], 
+        #         torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
+        #     ])
+        #     padded_input_ids.append(padded_seq)
+            
+        #     # Pad attention_mask
+        #     padded_mask = torch.cat([
+        #         attention_masks[i],
+        #         torch.zeros(pad_len, dtype=attention_masks[i].dtype)
+        #     ])
+        #     padded_attention_masks.append(padded_mask)
+            
+        #     # Pad labels
+        #     padded_label = torch.cat([
+        #         labels[i],
+        #         torch.full((pad_len,), -100, dtype=labels[i].dtype)  # -100 is ignored in loss
+        #     ])
+        #     padded_labels.append(padded_label)
+        
+        # return {
+        #     "input_ids": torch.stack(padded_input_ids),
+        #     "attention_mask": torch.stack(padded_attention_masks),
+        #     "labels": torch.stack(padded_labels)
+        # }
 
     def collate_inference(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
         input_ids = [feature["input_ids"] for feature in features]
@@ -273,75 +342,23 @@ class DynamicDataCollator:
             "attention_mask": torch.stack(padded_attention_masks)
         }
 
-        if "id" in features[0]:
-            result["id"] = [feature["id"] for feature in features]
-        if "premise" in features[0]:
-            result["premise"] = [feature["premise"] for feature in features]
-        if "proposition" in features[0]:    
-            result["proposition"] = [feature["proposition"] for feature in features]
-        if "label" in features[0]:
-            result["label"] = [feature["label"] for feature in features]
-        if "output" in features[0]:
-            result["output"] = [feature["output"] for feature in features]
+        for key in ["id", "premise", "proposition", "label", "output"]:
+            if key in features[0]:
+                result[key] = [feature[key] for feature in features]
+                
+        # if "id" in features[0]:
+        #     result["id"] = [feature["id"] for feature in features]
+        # if "premise" in features[0]:
+        #     result["premise"] = [feature["premise"] for feature in features]
+        # if "proposition" in features[0]:    
+        #     result["proposition"] = [feature["proposition"] for feature in features]
+        # if "label" in features[0]:
+        #     result["label"] = [feature["label"] for feature in features]
+        # if "output" in features[0]:
+        #     result["output"] = [feature["output"] for feature in features]
 
         return result
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if not any("labels" in feature for feature in features):
-            return self.collate_inference(features)
-        
-        # Handle training mode (features with labels)
-        return self.collate_training(features)
-    
-    def collate_training(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        
-        # Extract sequences
-        input_ids = [feature["input_ids"] for feature in features]
-        attention_masks = [feature["attention_mask"] for feature in features] 
-        labels = [feature["labels"] for feature in features]
-        
-        # Find max length in batch
-        max_length = max(len(seq) for seq in input_ids)
-        
-        # Round up to multiple of pad_to_multiple_of if specified
-        if self.pad_to_multiple_of:
-            max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
-        
-        # Pad sequences
-        padded_input_ids = []
-        padded_attention_masks = []
-        padded_labels = []
-        
-        for i in range(len(features)):
-            seq_len = len(input_ids[i])
-            pad_len = max_length - seq_len
-            
-            # Pad input_ids
-            padded_seq = torch.cat([
-                input_ids[i], 
-                torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-            ])
-            padded_input_ids.append(padded_seq)
-            
-            # Pad attention_mask
-            padded_mask = torch.cat([
-                attention_masks[i],
-                torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-            ])
-            padded_attention_masks.append(padded_mask)
-            
-            # Pad labels
-            padded_label = torch.cat([
-                labels[i],
-                torch.full((pad_len,), -100, dtype=labels[i].dtype)  # -100 is ignored in loss
-            ])
-            padded_labels.append(padded_label)
-        
-        return {
-            "input_ids": torch.stack(padded_input_ids),
-            "attention_mask": torch.stack(padded_attention_masks),
-            "labels": torch.stack(padded_labels)
-        }
 
 def prepare_fewshot_examples(train_path: str, seed: int, num_examples: int = 3) -> List[Dict]:
     print_log(f"Preparing few-shot examples from {train_path}")
