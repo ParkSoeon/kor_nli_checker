@@ -460,34 +460,4 @@ def create_datasets(args, tokenizer, fewshot_examples):
 def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8, is_training=True):
     print_log(f"Creating dynamic data collator for {model_type} model")
 
-    # if is_training:
-    #     return DataCollatorForSeq2Seq(
-    #         tokenizer=tokenizer,
-    #         model=None,
-    #         padding=True,
-    #         max_length=None,
-    #         pad_to_multiple_of=pad_to_multiple_of,
-    #         return_tensors="pt"
-    #     )
-
-    # else:
-    #     def inference_collate_fn(batch):
-    #         item = batch[0]
-            
-    #         result = {}
-    #         for key, value in item.items():
-    #             if key in ['input_ids', 'attention_mask']:
-    #                 if isinstance(value, torch.Tensor):
-    #                     result[key] = value.unsqueeze(0)  # (seq_len,) -> (1, seq_len)
-    #                 else:
-    #                     result[key] = torch.tensor(value).unsqueeze(0)
-    #             else:
-    #                 result[key] = [value] # Keep other fields as list
-            
-    #         return result
-        
-    #     return inference_collate_fn
-
-    # print_log("Dynamic data collator created successfully")
-
     return DynamicDataCollator(tokenizer, model_type=model_type, pad_to_multiple_of=pad_to_multiple_of)
