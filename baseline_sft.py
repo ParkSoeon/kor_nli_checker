@@ -37,8 +37,6 @@ from data import (
     create_data_collator
 )
 
-import gc
-
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -48,13 +46,6 @@ def print_log(message, prefix="LOG"):
 
 def get_model_id_from_path(model_path):
     return model_path.split('/')[-1].replace('-', '_')
-
-def clear_memory(force_gc=True):
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    if force_gc:
-        gc.collect()
 
 def get_parse():
     parser = argparse.ArgumentParser(description="Generate text using a pre-trained model.")
@@ -71,7 +62,7 @@ def get_parse():
     parser.add_argument("--test_path", type=str, required=True, help="Path to the test file.")
     parser.add_argument("--output_dir", type=str, default="./output", help="Output directory.")
     parser.add_argument("--max_input_length", type=int, default=512, help="Maximum input length.")
-    parser.add_argument("--max_output_length", type=int, default=80, help="Maximum target length.")
+    parser.add_argument("--max_output_length", type=int, default=256, help="Maximum target length.")
     
     # Training arguments
     parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Training batch size per device.")
@@ -84,7 +75,7 @@ def get_parse():
     parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation steps.")
     parser.add_argument("--save_total_limit", type=int, default=2, help="Save total limit.")
     parser.add_argument("--fp16", action="store_true", help="Use fp16 training.")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Gradient accumulation steps.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps.")
 
     # LoRA arguments
     parser.add_argument("--use_lora", action="store_true", help="Use LoRA for efficient fine-tuning.")
@@ -97,7 +88,7 @@ def get_parse():
         
     # Generation arguments
     parser.add_argument("--num_cands", type=int, default=3, help="Number of candidates to generate.")
-    parser.add_argument("--max_new_tokens", type=int, default=128, help="Maximum new tokens to generate.")
+    parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling.")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling.")
     parser.add_argument("--top_p", type=float, default=0.95, help="Top-p sampling.")
@@ -156,41 +147,20 @@ class CustomCallback(TrainerCallback):
             is_training=False, 
             use_chat_template=self.args.use_chat_template,
             fewshot_examples=self.fewshot_examples,
-            num_fewshot=self.args.num_fewshot,
+            num_fewshot=self.args.num_fewshot
         )
 
         # Use subset for faster evaluation during training
-        eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(3, len(eval_dataset_for_eval))))
-        eval_data_collator = create_data_collator(
-            self.tokenizer,
-            self.args.model_type,
-            self.args.pad_to_multiple_of,
-            is_training=False
-        )
-        eval_dataloader = DataLoader(
-            eval_subset,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=eval_data_collator
-        )
+        eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(10, len(eval_dataset_for_eval))))
+        eval_dataloader = DataLoader(eval_subset, batch_size=1, shuffle=False)
 
         for batch_index, batch_data in enumerate(eval_dataloader):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
 
-            # targets = batch_data['output']
-            # if not isinstance(targets, list):
-            #     targets = [targets]
-
-            targets = []
-            if 'output' in batch_data:
-                raw_targets = batch_data['output']
-                if isinstance(raw_targets, list):
-                    targets = [str(tar) for tar in raw_targets]
-                else:
-                    targets = [str(raw_targets)]
-            else:
-                targets = [""]
+            targets = batch_data['output']
+            if not isinstance(targets, list):
+                targets = [targets]
 
             # target = batch_data['output'][0] if isinstance(batch_data['output'], list) else batch_data['output']
             # print_log(f"batch_data keys: {batch_data.keys()}") # batch_data keys: dict_keys(['input_ids', 'attention_mask', 'id', 'premise', 'proposition', 'label'])
@@ -209,9 +179,10 @@ class CustomCallback(TrainerCallback):
                     do_sample=self.args.do_sample,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
-                    use_cache=False
                 )
 
+            batch_size = input_ids.size(0)
+            for i in range(batch_size):
                 input_length = input_ids.size(1)
                 generated_ids = outputs[i][input_length:]
                 generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
@@ -224,12 +195,6 @@ class CustomCallback(TrainerCallback):
                 
                 predictions.append(generated_text)
                 references.append(targets[i] if i < len(targets) else "")
-
-                del outputs
-                clear_memory(force_gc=True)
-
-            
-        clear_memory(force_gc=True)
         
         rouge_results = self.rouge_metric.compute(
             predictions=predictions,
@@ -268,16 +233,6 @@ class CustomCallback(TrainerCallback):
         print_log(f"  Combined Score: {combined_score:.4f}")
         
         model.train()
-
-        if hasattr(control, 'should_save') and control.should_save:
-            kwargs.get('logs', {}).update(eval_results)
-
-    def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % (args.logging_steps * 2) == 0:
-            clear_memory(force_gc=False)
-
-    def on_epoch_end(self, args, state, control, **kwargs):
-        clear_memory(force_gc=True)
         
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
@@ -346,8 +301,8 @@ class CustomCallback(TrainerCallback):
                 num_beams=self.args.num_beams if not self.args.do_sample else 1,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                use_cache=False,
-                return_dict_in_generate=False,
+                use_cache=True,
+                return_dict_in_generate=True,
                 output_scores=True if self.args.do_sample else False
             )
             
@@ -358,9 +313,6 @@ class CustomCallback(TrainerCallback):
 
             generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             candidates.append(generated_text)
-
-            del outputs
-            clear_memory(force_gc=True)
 
             # Add Additional Candidates 
             for _ in range(self.args.num_cands - 1):
@@ -377,16 +329,12 @@ class CustomCallback(TrainerCallback):
                     do_sample=True, # Force to ...
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
-                    use_cache=False,
-                    return_dict_in_generate=False,
+                    use_cache=True,
                 )
 
                 generated_ids = additional_outputs[0][input_ids.size(1):]
                 generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
                 candidates.append(generated_text)
-
-                del additional_outputs
-                clear_memory(force_gc=True)
 
             return candidates
 
@@ -419,30 +367,40 @@ class CustomCallback(TrainerCallback):
                 if key in data:
                     value = data[key]
                     if isinstance(value, list) and len(value) > 0:
-                        return str(value[0]) if value[0] is not None else default_value
+                        return value[0]
                     elif isinstance(value, torch.Tensor):
                         if value.numel() == 1: 
-                            return str(value.item())
-                        elif len(value) > 0:
-                            return str(value[0])
-
+                            return value.item()
+                        return str(value[0])
                     return str(value) if value is not None else default_value
 
-                return default_value
+                if 'input' in data:
+                    input_data = data['input']
+                    if isinstance(input_data, list) and len(input_data) > 0:
+                        input_data = input_data[0]
+                    
+                    if isinstance(input_data, dict) and key in input_data:
+                        value = input_data[key]
+                        if isinstance(value, list) and len(value) > 0:
+                            return value[0]
+                        else:
+                            return str(value) if value is not None else default_value
+
+                return default_value if batch_index is None else f"{default_value}_{batch_index}"
 
             # Extract other information from batch
             example_id = extract_keys(batch_data, 'id', '', batch_index)
             premise = extract_keys(batch_data, 'premise', '')
             proposition = extract_keys(batch_data, 'proposition', '')
             label = extract_keys(batch_data, 'label', '')
-            target = extract_keys(batch_data, 'output', '')
+            # target = extract_keys(batch_data, 'output', '')
 
             print_log(f"Processing Example {batch_index+1}:")
             print_log(f"[Extracted]  ID: {example_id}")
             print_log(f"[Extracted]  Premise: {premise}")
             print_log(f"[Extracted]  Proposition: {proposition}")
             print_log(f"[Extracted]  Label: {label}")
-            print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
+            # print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
 
             candidates = self.generate_candidates(model, tokenizer, input_ids, attention_mask)
 
@@ -456,7 +414,7 @@ class CustomCallback(TrainerCallback):
                 "premise": str(premise) if premise is not None else "",
                 "proposition": str(proposition) if proposition is not None else "",
                 "label": str(label) if label is not None else "",
-                "output": str(target) if target is not None else "",
+                # "output": str(target) if target is not None else "",
                 "candidates": [str(candidate) for candidate in candidates],
                 "best_candidate": str(best_candidate)
             }
@@ -470,22 +428,19 @@ class CustomCallback(TrainerCallback):
                 print_log(f"  Label: {label}")
                 for i, candidate in enumerate(candidates[:3]):
                     print_log(f"  Candidate {i + 1}: {candidate}")
-
-        clear_memory(force_gc=True)
         
         print_log(f"Generated {len(results)} results")
         return results
 
-    def evaluate_results(self, generated_results):
+    def evaluate_results(self, generated_result):
         print_log("Evaluating results...")
         
-        targets = [result['output'] for result in generated_results]
-        predictions = [result['best_candidate'] for result in generated_results]
+        targets = [result['output'] for result in generated_result]
+        predictions = [result['best_candidate'] for result in generated_result]
         
         rouge_results = self.rouge_metric.compute(
             predictions=predictions,
             references=targets,
-            use_stemmer=False
         )
         
         combined_score = (
@@ -499,15 +454,9 @@ class CustomCallback(TrainerCallback):
             "rouge2": rouge_results['rouge2'],
             "rougeL": rouge_results['rougeL'],
             "combined_rouge_score": combined_score,
-            "num_examples": len(generated_result),
+            "num_examples": len(results),
             "num_candidates_per_example": self.args.num_cands
         }
-
-        print_log("=== Evaluation Complete ===")
-        print_log(f"  ROUGE-1: {rouge_results['rouge1']:.4f}")
-        print_log(f"  ROUGE-2: {rouge_results['rouge2']:.4f}")
-        print_log(f"  ROUGE-L: {rouge_results['rougeL']:.4f}")
-        print_log(f"  Combined ROUGE Score: {combined_score:.4f}")
         
         return eval_results
     
@@ -581,8 +530,6 @@ def load_model_and_tokenizer(args):
         model.print_trainable_parameters()
         print_log("LoRA applied successfully")
 
-    clear_memory(force_gc=False)
-
     return model, tokenizer
 
 def train_model(args):
@@ -596,10 +543,9 @@ def train_model(args):
     
     # Create datasets using the new data module
     train_dataset, eval_dataset, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
-    clear_memory(force_gc=False)
     
     # Create dynamic data collator
-    data_collator = create_data_collator(tokenizer, args.model_type, args.pad_to_multiple_of, is_training=True)
+    data_collator = create_data_collator(tokenizer, args.model_type, args.pad_to_multiple_of)
     
     # Create output directory with timestamp
     timestamp = get_timestamp()
@@ -609,10 +555,6 @@ def train_model(args):
     os.makedirs(output_dir, exist_ok=True)
     print_log(f"Output directory: {output_dir}")
     print_log(f"Run name: {run_name}")
-
-    def compute_metrics(eval_pred):
-        predictions, labels = eval_pred
-        return {"DUMMY METRIC": 0.0}
     
     # Training arguments
     training_args = TrainingArguments(
@@ -625,12 +567,14 @@ def train_model(args):
         logging_dir=os.path.join(output_dir, "logs"),
         logging_steps=args.logging_steps,
         save_steps=args.save_steps,
+        eval_steps=args.eval_steps,
         eval_strategy="steps",
         save_total_limit=args.save_total_limit,
         load_best_model_at_end=False,
+        metric_for_best_model="eval_loss",
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
-        remove_unused_columns=True,
+        remove_unused_columns=False,
         report_to="wandb",
         dataloader_pin_memory=False,  # For dynamic padding
     )
@@ -645,8 +589,7 @@ def train_model(args):
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
-        compute_metrics=compute_metrics,
-        callbacks=[rouge_callback]#, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
+        callbacks=[rouge_callback, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
     )
     
     print_log("Starting training...")
@@ -660,8 +603,6 @@ def train_model(args):
     else:
         trainer.save_model()
         print_log("Full model saved")
-
-    clear_memory(force_gc=True)
 
     print_log("Running automatic inference with best checkpoint...")
     final_results, final_eval = rouge_callback.run_final_inference(model, tokenizer, output_dir)
@@ -715,9 +656,6 @@ def main():
 
     print_log(f"Use chat template: {args.use_chat_template}")
     print_log(f"Dynamic padding: pad_to_multiple_of={args.pad_to_multiple_of}")
-
-    del tokenizer
-    clear_memory(force_gc=False)
     
     # Create timestamped output directory
     model_id = get_model_id_from_path(args.model_name)
@@ -754,17 +692,12 @@ def main():
         if args.lora_model_path:
             print_log(f"Loading LoRA model from {args.lora_model_path}")
             model = PeftModel.from_pretrained(model, args.lora_model_path)
-            clear_memory(force_gc=False)
         
         _, _, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
         
-        clear_memory(force_gc=True)
-
         inference_callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
         inference_results = inference_callback.generate_candidates_optimized(model, tokenizer, test_dataset)
         
-        eval_results = inference_callback.evaluate_results(inference_results)
-
         # Save results
         timestamp = get_timestamp()
         model_id = get_model_id_from_path(args.model_name)
@@ -773,16 +706,6 @@ def main():
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(inference_results, f, ensure_ascii=False, indent=2)
         
-        print_log("Inference Results:")
-        for key, value in eval_results.items():
-            if isinstance(value, float):
-                print_log(f"  {key}: {value:.4f}")
-            else:
-                print_log(f"  {key}: {value}")
-
-    print_log("Execution complete")
-    clear_memory(force_gc=True)
 
 if __name__ == "__main__":
     main()
-
