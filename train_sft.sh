@@ -15,7 +15,7 @@ python src/generator.py \
     --lora_dropout 0.1 \
     --max_input_length 2000 \
     --max_output_length 100 \
-    --max_new_tokens 60 \
+    --max_new_tokens 70 \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --num_train_epochs 7 \
