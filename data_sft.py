@@ -1,492 +1,788 @@
+# generator.py
+
+import os
+import sys
 import json
-import random
-from transformers import DataCollatorForLanguageModeling, DataCollatorForSeq2Seq
-from torch.utils.data import Dataset
+import argparse
 import torch
-from typing import Dict, List, Any, Optional
+import wandb
+import numpy as np
+import random
+from datetime import datetime
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import (
+    AutoTokenizer, 
+    AutoModelForCausalLM, 
+    AutoModelForSeq2SeqLM, 
+    TrainingArguments, 
+    Trainer, 
+    TrainerCallback,
+    EarlyStoppingCallback
+)
 
-def print_log(message):
-    from datetime import datetime
+from peft import (
+    get_peft_model, 
+    LoraConfig, 
+    TaskType,
+    PeftModel 
+)
+
+from evaluate import load
+
+from data import (
+    EntailmentDataset,
+    prepare_fewshot_examples,
+    create_datasets,
+    create_data_collator
+)
+
+import gc
+
+def get_timestamp():
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] [LOG] {message}")
+    print(f"[{timestamp}] {message}")
 
-class EntailmentDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_input_length=1024, max_output_length=80, 
-                 model_type="causal", is_training=True, use_chat_template=True, 
-                 fewshot_examples=None, num_fewshot=1):
-        self.tokenizer = tokenizer
-        self.max_input_length = max_input_length
-        self.max_output_length = max_output_length
-        self.model_type = model_type
-        self.is_training = is_training
-        self.use_chat_template = use_chat_template
-        self.fewshot_examples = fewshot_examples if fewshot_examples else []
-        self.num_fewshot = num_fewshot
+def get_model_id_from_path(model_path):
+    return model_path.split('/')[-1].replace('-', '_')
 
-        with open(data_path, "r", encoding="utf-8") as f:
-            self.data = json.load(f)
+def clear_memory(force_gc=True):
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-        print_log(f"Loaded {len(self.data)} examples from {data_path}")
-        print_log(f"Using {self.num_fewshot} few-shot examples per batch")
-        print_log(f"Chat Template Mode: {self.use_chat_template}")
+    if force_gc:
+        gc.collect()
 
-    def clean_text_tokens(self, text):
-        text = text.replace('<|end_of_text|>', '')
+def get_parse():
+    parser = argparse.ArgumentParser(description="Generate text using a pre-trained model.")
+    
+    # Model arguments
+    parser.add_argument("--model_name", type=str, required=True, help="Name of the pre-trained model.")
+    parser.add_argument("--tokenizer_name", type=str, default=None, help="Name of the tokenizer (default: same as model).")
+    parser.add_argument("--model_type", type=str, choices=["causal", "seq2seq"], default="causal", help="Model type.")
+    parser.add_argument("--cache_dir", type=str, default="/home/nlplab/hdd1/cache_dir", help="Cache directory.")
+    
+    # Data arguments
+    parser.add_argument("--train_path", type=str, required=True, help="Path to the training file.")
+    parser.add_argument("--dev_path", type=str, required=True, help="Path to the validation file.")
+    parser.add_argument("--test_path", type=str, required=True, help="Path to the test file.")
+    parser.add_argument("--output_dir", type=str, default="./output", help="Output directory.")
+    parser.add_argument("--max_input_length", type=int, default=512, help="Maximum input length.")
+    parser.add_argument("--max_output_length", type=int, default=80, help="Maximum target length.")
+    
+    # Training arguments
+    parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Training batch size per device.")
+    parser.add_argument("--per_device_eval_batch_size", type=int, default=8, help="Evaluation batch size per device.")
+    parser.add_argument("--num_train_epochs", type=int, default=3, help="Number of training epochs.")
+    parser.add_argument("--learning_rate", type=float, default=2e-5, help="Learning rate.")
+    parser.add_argument("--warmup_steps", type=int, default=500, help="Warmup steps.")
+    parser.add_argument("--logging_steps", type=int, default=50, help="Logging steps.")
+    parser.add_argument("--save_steps", type=int, default=100, help="Save steps.")
+    parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation steps.")
+    parser.add_argument("--save_total_limit", type=int, default=2, help="Save total limit.")
+    parser.add_argument("--fp16", action="store_true", help="Use fp16 training.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Gradient accumulation steps.")
+
+    # LoRA arguments
+    parser.add_argument("--use_lora", action="store_true", help="Use LoRA for efficient fine-tuning.")
+    parser.add_argument("--lora_r", type=int, default=16, help="LoRA rank.")
+    parser.add_argument("--lora_alpha", type=int, default=32, help="LoRA alpha parameter.")
+    parser.add_argument("--lora_dropout", type=float, default=0.1, help="LoRA dropout.")
+    parser.add_argument("--lora_target_modules", nargs='+', default=None, help="Target modules for LoRA (e.g., q_proj k_proj v_proj o_proj).")
+    parser.add_argument("--lora_task_type", type=str, default="CAUSAL_LM", choices=["CAUSAL_LM", "SEQ_2_SEQ_LM"], help="LoRA task type.")
+    parser.add_argument("--lora_model_path", type=str, default=None, help="Path to pre-trained LoRA model for inference.")
         
-        # 중복된 시스템 헤더 제거
-        empty_system_content = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"
-        if text.startswith(empty_system_content):
-            text = text.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
-        
-        return text
+    # Generation arguments
+    parser.add_argument("--num_cands", type=int, default=3, help="Number of candidates to generate.")
+    parser.add_argument("--max_new_tokens", type=int, default=128, help="Maximum new tokens to generate.")
+    parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling.")
+    parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling.")
+    parser.add_argument("--top_p", type=float, default=0.95, help="Top-p sampling.")
+    parser.add_argument("--repetition_penalty", type=float, default=1.1, help="Repetition penalty.")
+    parser.add_argument("--do_sample", action="store_true", help="Enable sampling for generation.")
+    parser.add_argument("--num_beams", type=int, default=1, help="Number of beams for beam search (1 for greedy decoding).")
+    
+    # Few-shot arguments
+    parser.add_argument("--num_fewshot", type=int, default=3, help="Number of few-shot examples.")
+    parser.add_argument("--fewshot_seed", type=int, default=42, help="Seed for few-shot example selection.")
+    
+    # General arguments
+    parser.add_argument("--train", action="store_true", help="Whether to run training.")
+    parser.add_argument("--test", action="store_true", help="Whether to run testing on the test set.")
+    parser.add_argument("--wandb_project", type=str, default="2025HCLT", help="WandB project name.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed.")
+    parser.add_argument("--use_chat_template", action="store_true", default=True, help="Use chat template for formatting.")
+    
+    # Dynamic padding arguments
+    parser.add_argument("--pad_to_multiple_of", type=int, default=8, help="Pad sequences to multiple of this number.")
+    
+    parser.add_argument("--rouge1_weight", type=float, default=0.6, help="Weight for ROUGE-1 in evaluation.")
+    parser.add_argument("--rouge2_weight", type=float, default=0.2, help="Weight for ROUGE-2 in evaluation.")
+    parser.add_argument("--rougeL_weight", type=float, default=0.2, help="Weight for ROUGE-L in evaluation.")
 
-    def create_fewshot_prompt(self, premise, proposition, label):
-        examples = []
+    return parser.parse_args()
 
-        for example in self.fewshot_examples[:self.num_fewshot]:
-            ex_premise = example['input']['premise']
-            ex_proposition = example['input']['proposition']
-            ex_label = example['input']['label']
-            ex_output = example['output']
-
-            examples.append({
-                "premise": ex_premise,
-                "proposition": ex_proposition,
-                "label": ex_label,
-                "output": ex_output
-            })
-
-        if self.use_chat_template:
-            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.\n답변은 [설명] {output} 형식으로 작성하세요.\n설명문에 포함되는 '함의', '모순' 관계는 한국어로 작성하세요."}]
-
-            if examples: 
-                example_content = "다음은 자연어 추론 과제의 예시입니다:\n\n"
-                for i, ex in enumerate(examples, 1):
-                    example_content += f"[예시 {i}]\n"
-                    example_content += f"[전제] {ex['premise']}\n"
-                    example_content += f"[가설] {ex['proposition']}\n"
-                    example_content += f"[관계] {ex['label']}\n"
-                    example_content += f"[설명] {ex['output']}\n\n"
-
-                example_content += "이제 새로운 전제와 가설에 대해 관계를 분석해주세요:\n\n"
-                messages.append({"role": "user", "content": example_content})
-
-            current_message = f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
-            messages.append({"role": "user", "content": current_message})
-
-            return messages
-
-        else:
-            prompt_parts = ["다음은 자연어 추론 작업입니다. 전제와 가설 사이의 관계를 분석하고 설명해주세요.\n"]
-            
-            for ex in examples:
-                prompt_parts.append(f"[전제] {ex['premise']}")
-                prompt_parts.append(f"[가설] {ex['proposition']}")
-                prompt_parts.append(f"[관계] {ex['label']}")
-                prompt_parts.append(f"[설명] {ex['explanation']}\n")
-            
-            prompt_parts.append(f"[전제] {premise}")
-            prompt_parts.append(f"[가설] {proposition}")
-            prompt_parts.append(f"[관계] {label}")
-            if self.mode == "train":
-                prompt_parts.append("[설명]")
-            
-            return "\n".join(prompt_parts)
-
-    def __len__(self):
-        return len(self.data)
-
-    def __getitem__(self, idx):
-        item = self.data[idx]
-
-        premise = item['input']['premise']
-        proposition = item['input']['proposition']
-        label = item['input']['label']
-        output = item['output']
-
-        if self.use_chat_template:
-            messages = self.create_fewshot_prompt(premise, proposition, label)
-
-            if self.is_training:
-
-                prefix_list = self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-
-                prefix_list = self.clean_text_tokens(prefix_list)
-
-                prefix = self.tokenizer(
-                    prefix_list,
-                    truncation=True,
-                    return_tensors="pt",
-                    max_length=self.max_input_length,
-                    add_special_tokens=False
-                )
-
-                output_enc = self.tokenizer(
-                    output,
-                    truncation=True,
-                    return_tensors="pt",
-                    max_length=self.max_output_length,
-                    add_special_tokens=False
-                )
-
-                input_ids = torch.cat([prefix["input_ids"], output_enc["input_ids"]], dim=1).squeeze(0)
-                attention_mask = torch.cat([prefix["attention_mask"], output_enc["attention_mask"]], dim=1).squeeze(0)
-                prefix_input_ids = prefix["input_ids"].squeeze(0) # (1, L) -> (L,)
-
-                labels = input_ids.clone()
-                prefix_len = len(prefix_input_ids)
-
-                # Mask input tokens (set to -100 to ignore during loss calculation)
-                labels[:prefix_len] = -100
-
-                # Logging for Debugging
-                decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-                print_log(f"[DBG] Decoded total tokens (last 100 chars): {decoded[-100:]}")
-                print_log(f"[DBG] Prefix Decoded (last 100 chars): {self.tokenizer.decode(prefix_input_ids, skip_special_tokens=False)[-100:]}")
-                print_log(f"[DBG] Input IDs: {input_ids.tolist()}")
-                print_log(f"[DBG] Attention Mask: {attention_mask.tolist()}")
-                print_log(f"[DBG] Prefix Input IDs: {prefix_input_ids.tolist()}")
-
-                print_log(f"Premise: {premise}")
-                print_log(f"Proposition: {proposition}")
-                print_log(f"Label: {label}")
-                print_log(f"Target Output: {output}")
-                print_log(f"Input tokens length: {prefix_len}")
-                print_log(f"Total tokens length: {len(input_ids)}")
-                print_log(f"Target tokens length: {len(input_ids) - prefix_len}")
-                print_log("="*80)
-
-                return {
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
-                    "labels": labels,
-                    # "output": output
-                }
-
-            else:
-                inf_ft_list = self.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-
-                inf_ft_list = self.clean_text_tokens(inf_ft_list)
-
-                assistant_marker = "<|start_header_id|>assistant<|end_header_id|>"
-                if assistant_marker in inf_ft_list:
-                    marker_end = inf_ft_list.index(assistant_marker) + len(assistant_marker)
-                    inf_ft_list = inf_ft_list[:marker_end]
-
-                print_log(f"[DBG] Input sequence: {inf_ft_list}")
-
-                input_encoding = self.tokenizer(
-                    inf_ft_list,
-                    truncation=True,
-                    return_tensors="pt",
-                    max_length=self.max_input_length,
-                    add_special_tokens=True,
-                )
-
-                input_ids = input_encoding["input_ids"].squeeze(0)  # (1, L) -> (L,)
-                attention_mask = input_encoding["attention_mask"].squeeze(0)
-
-                # 디버깅 로그
-                decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-                print_log(f"[DBG] Inference input IDs: {input_ids.tolist()}")
-                        
-                # Log for debugging
-                print_log(f"==== Inference Example {idx+1} ====")
-                print_log(f"Premise: {premise}")
-                print_log(f"Proposition: {proposition}")
-                print_log(f"Label: {label}")
-                print_log(f"Input prompt length: {len(input_encoding['input_ids'].squeeze())}")
-
-                return {
-                    "input_ids": input_ids,
-                    "attention_mask": attention_mask,
-                    "id": item.get('id'),
-                    "premise": premise,
-                    "proposition": proposition,
-                    "label": label,
-                    "output": output
-                }
-
-        else:
-            print("[ERROR] Not Set as Chat Template Mode. Please check the configuration.")
-            assert 0
-
-class DynamicDataCollator:
-    def __init__(self, tokenizer, model_type="causal", pad_to_multiple_of=8):
+class CustomCallback(TrainerCallback):
+    def __init__(self, args, eval_dataset, tokenizer, fewshot_examples):
+        self.args = args
+        self.eval_dataset = eval_dataset
         self.tokenizer = tokenizer
-        self.model_type = model_type
-        self.pad_to_multiple_of = pad_to_multiple_of
+        self.fewshot_examples = fewshot_examples
+        self.rouge_metric = load("rouge")
+        self.evaluation_results = []
 
-    def __call__(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        if not any("labels" in feature for feature in features):
-            return self.collate_inference(features)
-        # Handle training mode (features with labels)
-        else:
-            return self.collate_training(features)
+        self.best_rouge_score = 0.0
+        self.best_checkpoint = None
+        self.eval_results = []
 
-    def collate_training(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def on_evaluate(self, args, state, control, **kwargs):
+        print_log("Starting evaluation...")
 
-        input_ids = [feature["input_ids"] for feature in features]
-        attention_masks = [feature["attention_mask"] for feature in features]
-        labels = [feature["labels"] for feature in features]
+        model = kwargs.get('model')
+        model.eval()
+        predictions = []
+        references = []
 
-        max_length = max(len(seq) for seq in input_ids)
+        # Create evaluation dataset for testing
+        eval_dataset_for_eval = EntailmentDataset(
+            data_path=self.args.dev_path,
+            tokenizer=self.tokenizer,
+            max_input_length=self.args.max_input_length,
+            max_output_length=self.args.max_output_length,
+            model_type=self.args.model_type,
+            is_training=False, 
+            use_chat_template=self.args.use_chat_template,
+            fewshot_examples=self.fewshot_examples,
+            num_fewshot=self.args.num_fewshot,
+        )
 
-        if self.pad_to_multiple_of:
-            max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
+        # Use subset for faster evaluation during training
+        eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(3, len(eval_dataset_for_eval))))
+        eval_data_collator = create_data_collator(
+            self.tokenizer,
+            self.args.model_type,
+            self.args.pad_to_multiple_of,
+            is_training=False
+        )
+        eval_dataloader = DataLoader(
+            eval_subset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=eval_data_collator
+        )
 
-        padded_input_ids = []
-        padded_attention_masks = []
-        padded_labels = []
+        for batch_index, batch_data in enumerate(eval_dataloader):
+            input_ids = batch_data['input_ids'].to(model.device)
+            attention_mask = batch_data['attention_mask'].to(model.device)
 
-        for i in range(len(features)):
-            seq_len = len(input_ids[i])
-            pad_len = max_length - seq_len
+            # targets = batch_data['output']
+            # if not isinstance(targets, list):
+            #     targets = [targets]
 
-            if pad_len > 0:
-                padded_seq = torch.cat([
-                    input_ids[i],
-                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-                ])
+            targets = []
+            if 'output' in batch_data:
+                raw_targets = batch_data['output']
+                if isinstance(raw_targets, list):
+                    targets = [str(tar) for tar in raw_targets]
+                else:
+                    targets = [str(raw_targets)]
             else:
-                padded_seq = input_ids[i]
-            padded_input_ids.append(padded_seq)
+                targets = [""]
 
-            if pad_len > 0:
-                padded_mask = torch.cat([
-                    attention_masks[i],
-                    torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-                ])
+            # target = batch_data['output'][0] if isinstance(batch_data['output'], list) else batch_data['output']
+            # print_log(f"batch_data keys: {batch_data.keys()}") # batch_data keys: dict_keys(['input_ids', 'attention_mask', 'id', 'premise', 'proposition', 'label'])
+
+            input_text = self.tokenizer.decode(input_ids.squeeze(), skip_special_tokens=False)
+
+            print_log(f"Input text: {input_text}") 
+            print_log(f"Target: {targets}")
+
+            with torch.no_grad():
+                outputs = model.generate(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=self.args.max_new_tokens,
+                    temperature=0.7,
+                    do_sample=self.args.do_sample,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                    use_cache=False
+                )
+
+                input_length = input_ids.size(1)
+                generated_ids = outputs[i][input_length:]
+                generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                
+                input_text = self.tokenizer.decode(input_ids[i], skip_special_tokens=False)
+                print_log(f"Sample {i} - Input text: {input_text}")
+                print_log(f"Sample {i} - Target: {targets[i] if i < len(targets) else 'N/A'}")
+                print_log(f"Sample {i} - Generated text: {generated_text}")
+                print_log("="*50)
+                
+                predictions.append(generated_text)
+                references.append(targets[i] if i < len(targets) else "")
+
+                del outputs
+                clear_memory(force_gc=True)
+
+            
+        clear_memory(force_gc=True)
+        
+        rouge_results = self.rouge_metric.compute(
+            predictions=predictions,
+            references=references,
+            use_stemmer=False
+        )
+        
+        bertscore_f1 = 0.0  # Placeholder
+        
+        combined_score = (
+            rouge_results['rouge1'] * self.args.rouge1_weight +
+            rouge_results['rouge2'] * self.args.rouge2_weight +
+            rouge_results['rougeL'] * self.args.rougeL_weight
+        )
+        
+        eval_results = {
+            "eval_rouge1": rouge_results['rouge1'],
+            "eval_rouge2": rouge_results['rouge2'],
+            "eval_rougeL": rouge_results['rougeL'],
+            "eval_bertscore_f1": bertscore_f1,
+            "eval_combined_score": combined_score,
+            "eval_step": state.global_step
+        }
+        
+        if combined_score > self.best_rouge_score:
+            self.best_rouge_score = combined_score
+            self.best_checkpoint = args.output_dir + f"/checkpoint-{state.global_step}"
+            print_log(f"New best checkpoint: {self.best_checkpoint} (Combined Score: {combined_score:.4f})")
+        
+        self.evaluation_results.append(eval_results)
+        
+        print_log(f"ROUGE Evaluation - Step {state.global_step}:")
+        print_log(f"  ROUGE-1: {rouge_results['rouge1']:.4f}")
+        print_log(f"  ROUGE-2: {rouge_results['rouge2']:.4f}")
+        print_log(f"  ROUGE-L: {rouge_results['rougeL']:.4f}")
+        print_log(f"  Combined Score: {combined_score:.4f}")
+        
+        model.train()
+
+        if hasattr(control, 'should_save') and control.should_save:
+            kwargs.get('logs', {}).update(eval_results)
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % (args.logging_steps * 2) == 0:
+            clear_memory(force_gc=False)
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        clear_memory(force_gc=True)
+        
+    def run_final_inference(self, model, tokenizer, output_dir):
+        print_log("Running final inference with best checkpoint...")
+        
+        if self.best_checkpoint and os.path.exists(self.best_checkpoint):
+            print_log(f"Loading best checkpoint: {self.best_checkpoint}")
+            if self.args.use_lora:
+                model = PeftModel.from_pretrained(model, self.best_checkpoint)
             else:
-                padded_mask = attention_masks[i]
-            padded_attention_masks.append(padded_mask)
+                checkpoint_dir = os.path.join(self.best_checkpoint, "adapter_model.bin")
+                if os.path.exists(checkpoint_dir):
+                    model.load_state_dict(torch.load(checkpoint_dir, map_location=model.device))
+                else:
+                    print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
 
-            if pad_len > 0:
-                padded_label = torch.cat([
-                    labels[i],
-                    torch.full((pad_len,), -100, dtype=labels[i].dtype)  # -100 is ignored in loss
-                ])
+        _, _, test_dataset = create_datasets(self.args, tokenizer, self.fewshot_examples)
+
+        results = self.generate_candidates_optimized(model, tokenizer, test_dataset)
+        
+        timestamp = get_timestamp()
+        model_id = get_model_id_from_path(self.args.model_name)
+        
+        output_file = os.path.join(output_dir, f"{model_id}_{timestamp}_final_results.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, ensure_ascii=False, indent=2)
+        
+        eval_results = self.evaluate_results(results)
+        
+        print_log("Final Evaluation Results:")
+        for key, value in eval_results.items():
+            if isinstance(value, float):
+                print_log(f"  {key}: {value:.4f}")
             else:
-                padded_label = labels[i]
-            padded_labels.append(padded_label)
+                print_log(f"  {key}: {value}")
+        
+        return results, eval_results
+    
+    def generate_candidates(self, model, tokenizer, input_ids, attention_mask):
 
-        return {
-            "input_ids": torch.stack(padded_input_ids),
-            "attention_mask": torch.stack(padded_attention_masks),
-            "labels": torch.stack(padded_labels)
+        candidates = []
+
+        print_log("Generating candidates...")
+        print_log(f"[DBG] Input IDs: {input_ids}")
+        print_log(f"[DBG] Attention Mask: {attention_mask}")
+        print_log(f"[DBG] Input IDs Shape: {input_ids.shape}")
+        print_log(f"[DBG] Attention Mask Shape: {attention_mask.shape}")
+        print_log(f"[DBG] input_ids device: {input_ids.device}")
+        print_log(f"[DBG] attention_mask device: {attention_mask.device}")
+        print_log(f"[DBG] Model device: {model.device}")
+
+        input_text = tokenizer.decode(input_ids.squeeze(), skip_special_tokens=False)
+        print_log(f"[DBG] Input text (first 200 chars): {input_text[:200]}...")
+        print_log(f"[DBG] Input text (last 100 chars): {input_text[-100:]}")
+
+        # The First candidate(Build the first Cache)
+        with torch.no_grad():
+            outputs = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_new_tokens=self.args.max_new_tokens,
+                temperature=self.args.temperature if self.args.do_sample else None,
+                top_k=self.args.top_k if self.args.do_sample else None,
+                top_p=self.args.top_p if self.args.do_sample else None,
+                repetition_penalty=self.args.repetition_penalty,
+                do_sample=self.args.do_sample,
+                num_beams=self.args.num_beams if not self.args.do_sample else 1,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=False,
+                return_dict_in_generate=False,
+                output_scores=True if self.args.do_sample else False
+            )
+            
+            if hasattr(outputs, 'sequences'):
+                generated_ids = outputs.sequences[0][input_ids.size(1):]
+            else: 
+                generated_ids = outputs[0][input_ids.size(1):]
+
+            generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+            candidates.append(generated_text)
+
+            del outputs
+            clear_memory(force_gc=True)
+
+            # Add Additional Candidates 
+            for _ in range(self.args.num_cands - 1):
+                temp_variation = self.args.temperature * (0.8 + 0.4 * torch.rand(1).item())
+
+                additional_outputs = model.generate(
+                    input_ids =input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=self.args.max_new_tokens,
+                    temperature=temp_variation if self.args.do_sample else None,
+                    top_k=self.args.top_k if self.args.do_sample else None,
+                    top_p=self.args.top_p if self.args.do_sample else None,
+                    repetition_penalty=self.args.repetition_penalty,
+                    do_sample=True, # Force to ...
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id,
+                    use_cache=False,
+                    return_dict_in_generate=False,
+                )
+
+                generated_ids = additional_outputs[0][input_ids.size(1):]
+                generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
+                candidates.append(generated_text)
+
+                del additional_outputs
+                clear_memory(force_gc=True)
+
+            return candidates
+
+    def generate_candidates_optimized(self, model, tokenizer, test_dataset):
+
+        print_log("Generating candidates with Cache Optimization...")
+        model.eval()
+        results = []
+        
+        # Create data collator for inference
+        data_collator = create_data_collator(
+            tokenizer, 
+            self.args.model_type, 
+            self.args.pad_to_multiple_of,
+            is_training=False
+        )
+        
+        dataloader = DataLoader(
+            test_dataset, 
+            batch_size=1, 
+            shuffle=False,
+            collate_fn=data_collator
+        )
+        
+        for batch_index, batch_data in enumerate(tqdm(dataloader, desc="Generating")):
+            input_ids = batch_data['input_ids'].to(model.device)
+            attention_mask = batch_data['attention_mask'].to(model.device)
+
+            def extract_keys(data, key, default_value, batch_index=None):
+                if key in data:
+                    value = data[key]
+                    if isinstance(value, list) and len(value) > 0:
+                        return str(value[0]) if value[0] is not None else default_value
+                    elif isinstance(value, torch.Tensor):
+                        if value.numel() == 1: 
+                            return str(value.item())
+                        elif len(value) > 0:
+                            return str(value[0])
+
+                    return str(value) if value is not None else default_value
+
+                return default_value
+
+            # Extract other information from batch
+            example_id = extract_keys(batch_data, 'id', '', batch_index)
+            premise = extract_keys(batch_data, 'premise', '')
+            proposition = extract_keys(batch_data, 'proposition', '')
+            label = extract_keys(batch_data, 'label', '')
+            target = extract_keys(batch_data, 'output', '')
+
+            print_log(f"Processing Example {batch_index+1}:")
+            print_log(f"[Extracted]  ID: {example_id}")
+            print_log(f"[Extracted]  Premise: {premise}")
+            print_log(f"[Extracted]  Proposition: {proposition}")
+            print_log(f"[Extracted]  Label: {label}")
+            print_log(f"[Extracted]  Ground Truth Explanation(Output): {target}")
+
+            candidates = self.generate_candidates(model, tokenizer, input_ids, attention_mask)
+
+            # if len(candidates) > 1 and target:
+            #     candidates = self.rank_candidates(candidates, target)
+
+            best_candidate = candidates[0] if candidates else ""
+
+            generated_result = {
+                "id": str(example_id) if example_id is not None else "",
+                "premise": str(premise) if premise is not None else "",
+                "proposition": str(proposition) if proposition is not None else "",
+                "label": str(label) if label is not None else "",
+                "output": str(target) if target is not None else "",
+                "candidates": [str(candidate) for candidate in candidates],
+                "best_candidate": str(best_candidate)
+            }
+            results.append(generated_result)
+
+            # Log first few examples for debugging
+            if batch_index < 5:
+                print_log(f"Example {batch_index + 1}:")
+                print_log(f"  Premise: {premise}")
+                print_log(f"  Proposition: {proposition}")
+                print_log(f"  Label: {label}")
+                for i, candidate in enumerate(candidates[:3]):
+                    print_log(f"  Candidate {i + 1}: {candidate}")
+
+        clear_memory(force_gc=True)
+        
+        print_log(f"Generated {len(results)} results")
+        return results
+
+    def evaluate_results(self, generated_results):
+        print_log("Evaluating results...")
+        
+        targets = [result['output'] for result in generated_results]
+        predictions = [result['best_candidate'] for result in generated_results]
+        
+        rouge_results = self.rouge_metric.compute(
+            predictions=predictions,
+            references=targets,
+            use_stemmer=False
+        )
+        
+        combined_score = (
+            rouge_results['rouge1'] * self.args.rouge1_weight +
+            rouge_results['rouge2'] * self.args.rouge2_weight +
+            rouge_results['rougeL'] * self.args.rougeL_weight
+        )
+        
+        eval_results = {
+            "rouge1": rouge_results['rouge1'],
+            "rouge2": rouge_results['rouge2'],
+            "rougeL": rouge_results['rougeL'],
+            "combined_rouge_score": combined_score,
+            "num_examples": len(generated_result),
+            "num_candidates_per_example": self.args.num_cands
         }
 
-        # # Extract sequences
-        # input_ids = [feature["input_ids"] for feature in features]
-        # attention_masks = [feature["attention_mask"] for feature in features] 
-        # labels = [feature["labels"] for feature in features]
+        print_log("=== Evaluation Complete ===")
+        print_log(f"  ROUGE-1: {rouge_results['rouge1']:.4f}")
+        print_log(f"  ROUGE-2: {rouge_results['rouge2']:.4f}")
+        print_log(f"  ROUGE-L: {rouge_results['rougeL']:.4f}")
+        print_log(f"  Combined ROUGE Score: {combined_score:.4f}")
         
-        # # Find max length in batch
-        # max_length = max(len(seq) for seq in input_ids)
-        
-        # # Round up to multiple of pad_to_multiple_of if specified
-        # if self.pad_to_multiple_of:
-        #     max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
-        
-        # # Pad sequences
-        # padded_input_ids = []
-        # padded_attention_masks = []
-        # padded_labels = []
-        
-        # for i in range(len(features)):
-        #     seq_len = len(input_ids[i])
-        #     pad_len = max_length - seq_len
-            
-        #     # Pad input_ids
-        #     padded_seq = torch.cat([
-        #         input_ids[i], 
-        #         torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-        #     ])
-        #     padded_input_ids.append(padded_seq)
-            
-        #     # Pad attention_mask
-        #     padded_mask = torch.cat([
-        #         attention_masks[i],
-        #         torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-        #     ])
-        #     padded_attention_masks.append(padded_mask)
-            
-        #     # Pad labels
-        #     padded_label = torch.cat([
-        #         labels[i],
-        #         torch.full((pad_len,), -100, dtype=labels[i].dtype)  # -100 is ignored in loss
-        #     ])
-        #     padded_labels.append(padded_label)
-        
-        # return {
-        #     "input_ids": torch.stack(padded_input_ids),
-        #     "attention_mask": torch.stack(padded_attention_masks),
-        #     "labels": torch.stack(padded_labels)
-        # }
-
-    def collate_inference(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
-        input_ids = [feature["input_ids"] for feature in features]
-        attention_masks = [feature["attention_mask"] for feature in features]
-
-        max_length = max(len(seq) for seq in input_ids)
-
-        if self.pad_to_multiple_of:
-            max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
-
-        # Pad sequences
-        padded_input_ids = []
-        padded_attention_masks = []
-
-        # for i in range(len(features)):
-        #     seq_len = len(input_ids[i])
-        #     pad_len = max_length - seq_len
-
-        #     # Pad input_ids
-        #     padded_seq = torch.cat([
-        #         input_ids[i],
-        #         torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-        #     ])
-        #     padded_input_ids.append(padded_seq)
-
-        #     # Pad attention_mask
-        #     padded_mask = torch.cat([
-        #         attention_masks[i],
-        #         torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-        #     ])
-        #     padded_attention_masks.append(padded_mask)
-
-        for i in range(len(features)):
-            seq_len = len(input_ids[i])
-            pad_len = max_length - seq_len
-
-            if pad_len > 0:
-                padded_seq = torch.cat([
-                    input_ids[i],
-                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-                ])
-            else:
-                padded_seq = input_ids[i]
-            padded_input_ids.append(padded_seq)
-
-            if pad_len > 0:
-                padded_mask = torch.cat([
-                    attention_masks[i],
-                    torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-                ])
-            else:
-                padded_mask = attention_masks[i]
-            padded_attention_masks.append(padded_mask)
-
-        result = {
-            "input_ids": torch.stack(padded_input_ids),
-            "attention_mask": torch.stack(padded_attention_masks)
-        }
-
-        for key in ["id", "premise", "proposition", "label", "output"]:
-            if key in features[0]:
-                result[key] = [feature[key] for feature in features]
-
-        # if "id" in features[0]:
-        #     result["id"] = [feature["id"] for feature in features]
-        # if "premise" in features[0]:
-        #     result["premise"] = [feature["premise"] for feature in features]
-        # if "proposition" in features[0]:    
-        #     result["proposition"] = [feature["proposition"] for feature in features]
-        # if "label" in features[0]:
-        #     result["label"] = [feature["label"] for feature in features]
-        # if "output" in features[0]:
-        #     result["output"] = [feature["output"] for feature in features]
-
-        return result
-
-
-def prepare_fewshot_examples(train_path: str, seed: int, num_examples: int = 3) -> List[Dict]:
-    print_log(f"Preparing few-shot examples from {train_path}")
+        return eval_results
     
-    with open(train_path, 'r', encoding='utf-8') as f:
-        train_data = json.load(f)
-    
-    print_log(f"Total training examples available: {len(train_data)}")
-    
-    # Set seed for reproducible few-shot selection
+def set_seed(seed: int = 42):
     random.seed(seed)
-    selected_examples = random.sample(train_data, min(num_examples, len(train_data)))
-    random.seed()  # Reset seed
-    
-    print_log(f"Selected {len(selected_examples)} few-shot examples with seed {seed}")
-    
-    # Log first few-shot example for debugging
-    if selected_examples:
-        first_ex = selected_examples[0]
-        print_log("First few-shot example:")
-        print_log(f"  Premise: {first_ex['input']['premise']}")
-        print_log(f"  Proposition: {first_ex['input']['proposition']}")
-        print_log(f"  Label: {first_ex['input']['label']}")
-        print_log(f"  Output: {first_ex['output']}")
-    
-    return selected_examples
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    print_log(f"Seed set to {seed}")
 
-def create_datasets(args, tokenizer, fewshot_examples):
-    print_log("Creating datasets...")
-    
-    train_dataset = EntailmentDataset(
-        args.train_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, is_training=True, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
-    )
-    
-    eval_dataset = EntailmentDataset(
-        args.dev_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, is_training=False, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
-    )
+def load_model_and_tokenizer(args):
+    tokenizer_name = args.tokenizer_name or args.model_name
+    print_log(f"Loading tokenizer: {tokenizer_name}")
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_name, cache_dir=args.cache_dir)
 
-    test_dataset = EntailmentDataset(
-        args.test_path, tokenizer, args.max_input_length, args.max_output_length,
-        args.model_type, is_training=False, use_chat_template=args.use_chat_template, fewshot_examples=fewshot_examples, num_fewshot=args.num_fewshot
-    )
+    print_log(f"Loading model: {args.model_name}")
+    print_log(f"Model type: {args.model_type}")
     
-    print_log(f"Created datasets - Train: {len(train_dataset)}, Eval: {len(eval_dataset)}, Test: {len(test_dataset)}")
+    if args.model_type == "causal":
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model_name,
+            cache_dir=args.cache_dir,
+            torch_dtype=torch.float16 if args.fp16 else torch.float32,
+            device_map="auto" 
+        )
+    else:
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            args.model_name,
+            cache_dir=args.cache_dir,
+            torch_dtype=torch.float16 if args.fp16 else torch.float32,
+            device_map="auto"
+        )
+
+    print_log(f"Model loaded. Parameters: {model.num_parameters():,}")
+
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+        print_log(f"[DBG] Set pad_token to eos_token: {tokenizer.pad_token}")
+    elif tokenizer.pad_token == '<|end_of_text|>':
+        tokenizer.pad_token = tokenizer.eos_token
+        print_log(f"[DBG] Changed pad_token from <|end_of_text|> to eos_token: {tokenizer.pad_token}")
     
-    return train_dataset, eval_dataset, test_dataset
-
-def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8, is_training=True):
-    print_log(f"Creating dynamic data collator for {model_type} model")
-
-    # if is_training:
-    #     return DataCollatorForSeq2Seq(
-    #         tokenizer=tokenizer,
-    #         model=None,
-    #         padding=True,
-    #         max_length=None,
-    #         pad_to_multiple_of=pad_to_multiple_of,
-    #         return_tensors="pt"
-    #     )
-
-    # else:
-    #     def inference_collate_fn(batch):
-    #         item = batch[0]
-            
-    #         result = {}
-    #         for key, value in item.items():
-    #             if key in ['input_ids', 'attention_mask']:
-    #                 if isinstance(value, torch.Tensor):
-    #                     result[key] = value.unsqueeze(0)  # (seq_len,) -> (1, seq_len)
-    #                 else:
-    #                     result[key] = torch.tensor(value).unsqueeze(0)
-    #             else:
-    #                 result[key] = [value] # Keep other fields as list
-            
-    #         return result
+    if args.use_lora:
+        print_log("Applying LoRA configuration...")
         
-    #     return inference_collate_fn
+        if args.lora_target_modules is None:
+            if "llama" in args.model_name.lower() or "kanana" in args.model_name.lower():
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            elif "qwen" in args.model_name.lower():
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+            else:
+                target_modules = ["q_proj", "k_proj", "v_proj", "o_proj"]
+        else:
+            target_modules = args.lora_target_modules
+            
+        print_log(f"LoRA target modules: {target_modules}")
+        
+        task_type = TaskType.CAUSAL_LM if args.model_type == "causal" else TaskType.SEQ_2_SEQ_LM
+        
+        lora_config = LoraConfig(
+            task_type=task_type,
+            inference_mode=False,
+            r=args.lora_r,
+            lora_alpha=args.lora_alpha,
+            lora_dropout=args.lora_dropout,
+            target_modules=target_modules,
+            bias="none"
+        )
+        
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
+        print_log("LoRA applied successfully")
 
-    # print_log("Dynamic data collator created successfully")
+    clear_memory(force_gc=False)
 
-    return DynamicDataCollator(tokenizer, model_type=model_type, pad_to_multiple_of=pad_to_multiple_of)
+    return model, tokenizer
+
+def train_model(args):
+    print_log("Starting training mode")
+    
+    # Prepare few-shot examples
+    fewshot_examples = prepare_fewshot_examples(args.train_path, args.fewshot_seed, args.num_fewshot * 3)
+    
+    # Load model and tokenizer
+    model, tokenizer = load_model_and_tokenizer(args)
+    
+    # Create datasets using the new data module
+    train_dataset, eval_dataset, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
+    clear_memory(force_gc=False)
+    
+    # Create dynamic data collator
+    data_collator = create_data_collator(tokenizer, args.model_type, args.pad_to_multiple_of, is_training=True)
+    
+    # Create output directory with timestamp
+    timestamp = get_timestamp()
+    model_id = get_model_id_from_path(args.model_name)
+    run_name = f"{model_id}_{timestamp}"
+    output_dir = os.path.join(args.output_dir, run_name)
+    os.makedirs(output_dir, exist_ok=True)
+    print_log(f"Output directory: {output_dir}")
+    print_log(f"Run name: {run_name}")
+
+    def compute_metrics(eval_pred):
+        predictions, labels = eval_pred
+        return {"DUMMY METRIC": 0.0}
+    
+    # Training arguments
+    training_args = TrainingArguments(
+        output_dir=output_dir,
+        per_device_train_batch_size=args.per_device_train_batch_size,
+        per_device_eval_batch_size=args.per_device_eval_batch_size,
+        num_train_epochs=args.num_train_epochs,
+        learning_rate=args.learning_rate,
+        warmup_steps=args.warmup_steps,
+        logging_dir=os.path.join(output_dir, "logs"),
+        logging_steps=args.logging_steps,
+        save_steps=args.save_steps,
+        eval_strategy="steps",
+        save_total_limit=args.save_total_limit,
+        load_best_model_at_end=False,
+        fp16=args.fp16,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        remove_unused_columns=True,
+        report_to="wandb",
+        dataloader_pin_memory=False,  # For dynamic padding
+    )
+    
+    rouge_callback = CustomCallback(args, eval_dataset, tokenizer, fewshot_examples)
+
+    # Trainer
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        data_collator=data_collator,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
+        callbacks=[rouge_callback]#, EarlyStoppingCallback(early_stopping_patience=3, early_stopping_threshold=0.01)],
+    )
+    
+    print_log("Starting training...")
+    trainer.train()
+    
+    print_log("Saving final model...")
+    if args.use_lora:
+        model.save_pretrained(output_dir)
+        tokenizer.save_pretrained(output_dir)
+        print_log("LoRA weights and tokenizer saved")
+    else:
+        trainer.save_model()
+        print_log("Full model saved")
+
+    clear_memory(force_gc=True)
+
+    print_log("Running automatic inference with best checkpoint...")
+    final_results, final_eval = rouge_callback.run_final_inference(model, tokenizer, output_dir)
+    
+    # Save training summary
+    training_summary = {
+        "model_name": args.model_name,
+        "run_name": run_name,
+        "best_checkpoint": rouge_callback.best_checkpoint,
+        "best_combined_score": rouge_callback.best_rouge_score,
+        "final_evaluation": final_eval,
+        "training_args": vars(args),
+        "evaluation_history": rouge_callback.evaluation_results
+    }
+    
+    summary_file = os.path.join(output_dir, f"{run_name}_training_summary.json")
+    with open(summary_file, 'w', encoding='utf-8') as f:
+        json.dump(training_summary, f, ensure_ascii=False, indent=2)
+    
+    print_log(f"Training summary saved to {summary_file}")
+    
+    return model, tokenizer, final_results, final_eval
+
+    print_log(f"Training complete. Model saved to {output_dir}")
+    return model, tokenizer, None, None
+
+def main():
+    args = get_parse()
+    set_seed(args.seed)
+    
+    print_log("Starting main execution")
+    print_log(f"Model: {args.model_name}")
+
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+
+    print_log(f">>> Tokenizer for '{args.model_name}' loaded successfully.")
+
+    print_log("\n--- Special Tokens Map ---")
+    print_log(tokenizer.special_tokens_map)
+
+    print_log("\n--- Detailed Special Tokens ---")
+    print_log(f"BOS (Begin of Sentence) Token: '{tokenizer.bos_token}'")
+    print_log(f"EOS (End of Sentence) Token: '{tokenizer.eos_token}'")
+    print_log(f"PAD (Padding) Token: '{tokenizer.pad_token}'")
+    print_log(f"UNK (Unknown) Token: '{tokenizer.unk_token}'")
+    print_log(f"SEP (Separator) Token: '{tokenizer.sep_token}'")
+    print_log(f"CLS (Classifier) Token: '{tokenizer.cls_token}'")
+
+    print_log("\n--- All Special Tokens ---")
+    print_log(tokenizer.all_special_tokens)
+
+    print_log(f"Use chat template: {args.use_chat_template}")
+    print_log(f"Dynamic padding: pad_to_multiple_of={args.pad_to_multiple_of}")
+
+    del tokenizer
+    clear_memory(force_gc=False)
+    
+    # Create timestamped output directory
+    model_id = get_model_id_from_path(args.model_name)
+    timestamp = get_timestamp()
+    run_name = f"{model_id}_{timestamp}"
+
+    # Initialize wandb
+    if args.train:
+        wandb.init(
+            project=args.wandb_project,
+            config=vars(args),
+            name=run_name
+        )
+        print_log("Wandb initialized")
+    
+    if args.train:
+        model, tokenizer, final_results, final_eval = train_model(args)
+        
+        if final_results and final_eval:
+            print_log("Training and testing completed successfully!")
+            print_log("Final Results Summary:")
+            for key, value in final_eval.items():
+                if isinstance(value, float):
+                    print_log(f"  {key}: {value:.4f}")
+                else:
+                    print_log(f"  {key}: {value}")
+
+    elif args.test:
+        # Inference only mode
+        print_log("Starting inference mode")
+        fewshot_examples = prepare_fewshot_examples(args.train_path, args.fewshot_seed, args.num_fewshot * 3)
+        model, tokenizer = load_model_and_tokenizer(args)
+        
+        if args.lora_model_path:
+            print_log(f"Loading LoRA model from {args.lora_model_path}")
+            model = PeftModel.from_pretrained(model, args.lora_model_path)
+            clear_memory(force_gc=False)
+        
+        _, _, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
+        
+        clear_memory(force_gc=True)
+
+        inference_callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
+        inference_results = inference_callback.generate_candidates_optimized(model, tokenizer, test_dataset)
+        
+        eval_results = inference_callback.evaluate_results(inference_results)
+
+        # Save results
+        timestamp = get_timestamp()
+        model_id = get_model_id_from_path(args.model_name)
+        
+        output_file = os.path.join("./results", f"{model_id}_{timestamp}_inference_results.json")
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(inference_results, f, ensure_ascii=False, indent=2)
+        
+        print_log("Inference Results:")
+        for key, value in eval_results.items():
+            if isinstance(value, float):
+                print_log(f"  {key}: {value:.4f}")
+            else:
+                print_log(f"  {key}: {value}")
+
+    print_log("Execution complete")
+    clear_memory(force_gc=True)
+
+if __name__ == "__main__":
+    main()
+
