@@ -128,6 +128,9 @@ class CustomCallback(TrainerCallback):
         self.best_checkpoint = None
         self.eval_results = []
 
+        self.best_dir = None
+        self.best_step = -1
+
     def on_evaluate(self, args, state, control, **kwargs):
         print_log("Starting evaluation...")
 
@@ -220,9 +223,20 @@ class CustomCallback(TrainerCallback):
         
         if combined_score > self.best_rouge_score:
             self.best_rouge_score = combined_score
-            self.best_checkpoint = args.output_dir + f"/checkpoint-{state.global_step}"
-            print_log(f"New best checkpoint: {self.best_checkpoint} (Combined Score: {combined_score:.4f})")
-        
+            self.best_checkpoint = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+            print_log(f"New best combined ROUGE score: {self.best_rouge_score:.4f} at step {state.global_step}")
+
+            # If best, save the model and tokenizer
+            self.best_dir = os.path.join(args.output_dir, f"best_checkpoint_with_combined")   
+            os.makedirs(self.best_dir, exist_ok=True)
+            if self.args.use_lora:
+                model.save_pretrained(self.best_dir)
+            else:
+                model.save_pretrained(self.best_dir)
+            self.tokenizer.save_pretrained(self.best_dir)
+
+            control.should_save = True
+
         self.evaluation_results.append(eval_results)
         
         print_log(f"ROUGE Evaluation - Step {state.global_step}:")
@@ -233,12 +247,43 @@ class CustomCallback(TrainerCallback):
         
         model.train()
         
-        return eval_results
+        return control
 
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
         
-        if self.best_checkpoint and os.path.exists(self.best_checkpoint):
+        # if self.best_checkpoint and os.path.exists(self.best_checkpoint):
+        #     print_log(f"Loading best checkpoint: {self.best_checkpoint}")
+        #     if self.args.use_lora:
+        #         model = PeftModel.from_pretrained(model, self.best_checkpoint)
+        #     else:
+        #         checkpoint_dir = os.path.join(self.best_checkpoint, "adapter_model.bin")
+        #         if os.path.exists(checkpoint_dir):
+        #             model.load_state_dict(torch.load(checkpoint_dir, map_location=model.device))
+        #         else:
+        #             print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
+
+        if self.best_dir and os.path.exists(self.best_dir):
+            print_log(f"Loading best model from: {self.best_dir}")
+            if self.args.use_lora:
+                model = PeftModel.from_pretrained(model, self.best_dir)
+            else:
+                if self.args.model_type == "causal":
+                    model = AutoModelForCausalLM.from_pretrained(
+                        self.best_dir,
+                        torch_dtype = (torch.float16 if self.args.fp16 else torch.float32),
+                        device_map="auto"
+                    )
+                else:
+                    model = AutoModelForSeq2SeqLM.from_pretrained(
+                        self.best_dir,
+                        torch_dtype = (torch.float16 if self.args.fp16 else torch.float32),
+                        device_map="auto"
+                    )
+
+            tokenizer = AutoTokenizer.from_pretrained(self.best_dir)
+
+        elif self.best_checkpoint and os.path.exists(self.best_checkpoint):
             print_log(f"Loading best checkpoint: {self.best_checkpoint}")
             if self.args.use_lora:
                 model = PeftModel.from_pretrained(model, self.best_checkpoint)
@@ -248,6 +293,8 @@ class CustomCallback(TrainerCallback):
                     model.load_state_dict(torch.load(checkpoint_dir, map_location=model.device))
                 else:
                     print_log(f"Checkpoint directory {checkpoint_dir} does not exist. Loading full model instead.")
+        else:
+            print_log("No best checkpoint found. Using current model for inference.")
 
         _, _, test_dataset = create_datasets(self.args, tokenizer, self.fewshot_examples)
 
@@ -570,9 +617,9 @@ def train_model(args):
         save_steps=args.save_steps,
         eval_steps=args.eval_steps,
         eval_strategy="steps",
-        load_best_model_at_end=False,
-        # metric_for_best_model="eval_combined_score",
-        # greater_is_better=True,
+        load_best_model_at_end=True,
+        metric_for_best_model="eval_combined_score",
+        greater_is_better=True,
         fp16=args.fp16,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         remove_unused_columns=False,
