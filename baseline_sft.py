@@ -84,7 +84,7 @@ def get_parse():
     parser.add_argument("--eval_steps", type=int, default=100, help="Evaluation steps.")
     parser.add_argument("--save_total_limit", type=int, default=2, help="Save total limit.")
     parser.add_argument("--fp16", action="store_true", help="Use fp16 training.")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps.")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=8, help="Gradient accumulation steps.")
 
     # LoRA arguments
     parser.add_argument("--use_lora", action="store_true", help="Use LoRA for efficient fine-tuning.")
@@ -160,7 +160,7 @@ class CustomCallback(TrainerCallback):
         )
 
         # Use subset for faster evaluation during training
-        eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(10, len(eval_dataset_for_eval))))
+        eval_subset = torch.utils.data.Subset(eval_dataset_for_eval, range(min(3, len(eval_dataset_for_eval))))
         eval_data_collator = create_data_collator(
             self.tokenizer,
             self.args.model_type,
@@ -189,22 +189,6 @@ class CustomCallback(TrainerCallback):
                     targets = [str(tar) for tar in raw_targets]
                 else:
                     targets = [str(raw_targets)]
-            elif 'labels' in batch_data:
-                labels = batch_data['labels']
-                if isinstance(labels, torch.Tensor):
-                    for i in range(labels.size(0)):
-                        label_tokens = labels[i]
-                        
-                        valid_tokens = label_tokens[label_tokens != -100]
-
-                        if len(valid_tokens) > 0:
-                            decoded = self.tokenizer.decode(valid_tokens, skip_special_tokens=True).strip()
-                            targets.append(decoded)
-                        else:
-                            targets.append("")
-
-                else:
-                    targets = [str(labels)] if not isinstance(labels, list) else [str(lab) for lab in labels]
             else:
                 targets = [""]
 
@@ -225,10 +209,9 @@ class CustomCallback(TrainerCallback):
                     do_sample=self.args.do_sample,
                     pad_token_id=self.tokenizer.pad_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
+                    use_cache=False
                 )
 
-            batch_size = input_ids.size(0)
-            for i in range(batch_size):
                 input_length = input_ids.size(1)
                 generated_ids = outputs[i][input_length:]
                 generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
@@ -242,8 +225,9 @@ class CustomCallback(TrainerCallback):
                 predictions.append(generated_text)
                 references.append(targets[i] if i < len(targets) else "")
 
-            if batch_index % 3 == 2:
-                clear_memory(force_gc=False)
+                del outputs
+                clear_memory(force_gc=True)
+
             
         clear_memory(force_gc=True)
         
@@ -362,8 +346,8 @@ class CustomCallback(TrainerCallback):
                 num_beams=self.args.num_beams if not self.args.do_sample else 1,
                 pad_token_id=tokenizer.pad_token_id,
                 eos_token_id=tokenizer.eos_token_id,
-                use_cache=True,
-                return_dict_in_generate=True,
+                use_cache=False,
+                return_dict_in_generate=False,
                 output_scores=True if self.args.do_sample else False
             )
             
@@ -374,6 +358,9 @@ class CustomCallback(TrainerCallback):
 
             generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
             candidates.append(generated_text)
+
+            del outputs
+            clear_memory(force_gc=True)
 
             # Add Additional Candidates 
             for _ in range(self.args.num_cands - 1):
@@ -390,16 +377,16 @@ class CustomCallback(TrainerCallback):
                     do_sample=True, # Force to ...
                     pad_token_id=tokenizer.pad_token_id,
                     eos_token_id=tokenizer.eos_token_id,
-                    use_cache=True,
+                    use_cache=False,
+                    return_dict_in_generate=False,
                 )
 
                 generated_ids = additional_outputs[0][input_ids.size(1):]
                 generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
                 candidates.append(generated_text)
 
-                if _ % 2 == 1:
-                    del additional_outputs
-                    clear_memory(force_gc=False)
+                del additional_outputs
+                clear_memory(force_gc=True)
 
             return candidates
 
@@ -795,7 +782,7 @@ def main():
 
     print_log("Execution complete")
     clear_memory(force_gc=True)
-    
+
 if __name__ == "__main__":
     main()
 
