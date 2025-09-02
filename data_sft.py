@@ -234,29 +234,55 @@ class DynamicDataCollator:
 
     def collate_training(self, features: List[Dict[str, Any]]) -> Dict[str, Any]:
 
-        tensor_features = []
+        input_ids = [feature["input_ids"] for feature in features]
+        attention_masks = [feature["attention_mask"] for feature in features]
+        labels = [feature["labels"] for feature in features]
 
-        for feature in features:
-            tensor_feature = {
-                "input_ids": feature["input_ids"],
-                "attention_mask": feature["attention_mask"],
-                "labels": feature["labels"]
-            }
-            tensor_features.append(tensor_feature)
+        max_length = max(len(seq) for seq in input_ids)
 
-        if self.model_type == "causal":
-            base_collator = DataCollatorForLanguageModeling(
-                tokenizer=self.tokenizer,
-                mlm=False,
-                pad_to_multiple_of=self.pad_to_multiple_of
-            )
-        else:
-            base_collator = DataCollatorForSeq2Seq(
-                tokenizer=self.tokenizer,
-                pad_to_multiple_of=self.pad_to_multiple_of
-            )
+        if self.pad_to_multiple_of:
+            max_length = ((max_length + self.pad_to_multiple_of - 1) // self.pad_to_multiple_of) * self.pad_to_multiple_of
 
-        return base_collator(tensor_features)
+        padded_input_ids = []
+        padded_attention_masks = []
+        padded_labels = []
+
+        for i in range(len(features)):
+            seq_len = len(input_ids[i])
+            pad_len = max_length - seq_len
+
+            if pad_len > 0:
+                padded_seq = torch.cat([
+                    input_ids[i],
+                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
+                ])
+            else:
+                padded_seq = input_ids[i]
+            padded_input_ids.append(padded_seq)
+
+            if pad_len > 0:
+                padded_mask = torch.cat([
+                    attention_masks[i],
+                    torch.zeros(pad_len, dtype=attention_masks[i].dtype)
+                ])
+            else:
+                padded_mask = attention_masks[i]
+            padded_attention_masks.append(padded_mask)
+
+            if pad_len > 0:
+                padded_label = torch.cat([
+                    labels[i],
+                    torch.full((pad_len,), -100, dtype=labels[i].dtype)  # -100 is ignored in loss
+                ])
+            else:
+                padded_label = labels[i]
+            padded_labels.append(padded_label)
+
+        return {
+            "input_ids": torch.stack(padded_input_ids),
+            "attention_mask": torch.stack(padded_attention_masks),
+            "labels": torch.stack(padded_labels)
+        }
 
         # # Extract sequences
         # input_ids = [feature["input_ids"] for feature in features]
@@ -319,22 +345,44 @@ class DynamicDataCollator:
         padded_input_ids = []
         padded_attention_masks = []
 
+        # for i in range(len(features)):
+        #     seq_len = len(input_ids[i])
+        #     pad_len = max_length - seq_len
+
+        #     # Pad input_ids
+        #     padded_seq = torch.cat([
+        #         input_ids[i],
+        #         torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
+        #     ])
+        #     padded_input_ids.append(padded_seq)
+
+        #     # Pad attention_mask
+        #     padded_mask = torch.cat([
+        #         attention_masks[i],
+        #         torch.zeros(pad_len, dtype=attention_masks[i].dtype)
+        #     ])
+        #     padded_attention_masks.append(padded_mask)
+
         for i in range(len(features)):
             seq_len = len(input_ids[i])
             pad_len = max_length - seq_len
 
-            # Pad input_ids
-            padded_seq = torch.cat([
-                input_ids[i],
-                torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
-            ])
+            if pad_len > 0:
+                padded_seq = torch.cat([
+                    input_ids[i],
+                    torch.full((pad_len,), self.tokenizer.pad_token_id, dtype=input_ids[i].dtype)
+                ])
+            else:
+                padded_seq = input_ids[i]
             padded_input_ids.append(padded_seq)
 
-            # Pad attention_mask
-            padded_mask = torch.cat([
-                attention_masks[i],
-                torch.zeros(pad_len, dtype=attention_masks[i].dtype)
-            ])
+            if pad_len > 0:
+                padded_mask = torch.cat([
+                    attention_masks[i],
+                    torch.zeros(pad_len, dtype=attention_masks[i].dtype)
+                ])
+            else:
+                padded_mask = attention_masks[i]
             padded_attention_masks.append(padded_mask)
 
         result = {
@@ -345,7 +393,7 @@ class DynamicDataCollator:
         for key in ["id", "premise", "proposition", "label", "output"]:
             if key in features[0]:
                 result[key] = [feature[key] for feature in features]
-                
+
         # if "id" in features[0]:
         #     result["id"] = [feature["id"] for feature in features]
         # if "premise" in features[0]:
@@ -411,32 +459,34 @@ def create_datasets(args, tokenizer, fewshot_examples):
 def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8, is_training=True):
     print_log(f"Creating dynamic data collator for {model_type} model")
 
-    if is_training:
-        return DataCollatorForSeq2Seq(
-            tokenizer=tokenizer,
-            model=None,
-            padding=True,
-            max_length=None,
-            pad_to_multiple_of=pad_to_multiple_of,
-            return_tensors="pt"
-        )
+    # if is_training:
+    #     return DataCollatorForSeq2Seq(
+    #         tokenizer=tokenizer,
+    #         model=None,
+    #         padding=True,
+    #         max_length=None,
+    #         pad_to_multiple_of=pad_to_multiple_of,
+    #         return_tensors="pt"
+    #     )
 
-    else:
-        def inference_collate_fn(batch):
-            item = batch[0]
+    # else:
+    #     def inference_collate_fn(batch):
+    #         item = batch[0]
             
-            result = {}
-            for key, value in item.items():
-                if key in ['input_ids', 'attention_mask']:
-                    if isinstance(value, torch.Tensor):
-                        result[key] = value.unsqueeze(0)  # (seq_len,) -> (1, seq_len)
-                    else:
-                        result[key] = torch.tensor(value).unsqueeze(0)
-                else:
-                    result[key] = [value] # Keep other fields as list
+    #         result = {}
+    #         for key, value in item.items():
+    #             if key in ['input_ids', 'attention_mask']:
+    #                 if isinstance(value, torch.Tensor):
+    #                     result[key] = value.unsqueeze(0)  # (seq_len,) -> (1, seq_len)
+    #                 else:
+    #                     result[key] = torch.tensor(value).unsqueeze(0)
+    #             else:
+    #                 result[key] = [value] # Keep other fields as list
             
-            return result
+    #         return result
         
-        return inference_collate_fn
+    #     return inference_collate_fn
 
-    print_log("Dynamic data collator created successfully")
+    # print_log("Dynamic data collator created successfully")
+
+    return DynamicDataCollator(tokenizer, model_type=model_type, pad_to_multiple_of=pad_to_multiple_of)
