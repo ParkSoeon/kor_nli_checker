@@ -37,6 +37,8 @@ from data import (
     create_data_collator
 )
 
+import gc
+
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -47,9 +49,12 @@ def print_log(message, prefix="LOG"):
 def get_model_id_from_path(model_path):
     return model_path.split('/')[-1].replace('-', '_')
 
-def clear_memory():
+def clear_memory(force_gc=True):
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+    if force_gc:
+        gc.collect()
 
 def get_parse():
     parser = argparse.ArgumentParser(description="Generate text using a pre-trained model.")
@@ -236,6 +241,11 @@ class CustomCallback(TrainerCallback):
                 
                 predictions.append(generated_text)
                 references.append(targets[i] if i < len(targets) else "")
+
+            if batch_index % 3 == 2:
+                clear_memory(force_gc=False)
+            
+        clear_memory(force_gc=True)
         
         rouge_results = self.rouge_metric.compute(
             predictions=predictions,
@@ -277,6 +287,13 @@ class CustomCallback(TrainerCallback):
 
         if hasattr(control, 'should_save') and control.should_save:
             kwargs.get('logs', {}).update(eval_results)
+
+    def on_step_end(self, args, state, control, **kwargs):
+        if state.global_step % (args.logging_steps * 2) == 0:
+            clear_memory(force_gc=False)
+
+    def on_epoch_end(self, args, state, control, **kwargs):
+        clear_memory(force_gc=True)
         
     def run_final_inference(self, model, tokenizer, output_dir):
         print_log("Running final inference with best checkpoint...")
@@ -380,6 +397,10 @@ class CustomCallback(TrainerCallback):
                 generated_text = tokenizer.decode(generated_ids, skip_special_tokens=True).strip()
                 candidates.append(generated_text)
 
+                if _ % 2 == 1:
+                    del additional_outputs
+                    clear_memory(force_gc=False)
+
             return candidates
 
     def generate_candidates_optimized(self, model, tokenizer, test_dataset):
@@ -462,6 +483,8 @@ class CustomCallback(TrainerCallback):
                 print_log(f"  Label: {label}")
                 for i, candidate in enumerate(candidates[:3]):
                     print_log(f"  Candidate {i + 1}: {candidate}")
+
+        clear_memory(force_gc=True)
         
         print_log(f"Generated {len(results)} results")
         return results
@@ -571,6 +594,8 @@ def load_model_and_tokenizer(args):
         model.print_trainable_parameters()
         print_log("LoRA applied successfully")
 
+    clear_memory(force_gc=False)
+
     return model, tokenizer
 
 def train_model(args):
@@ -584,6 +609,7 @@ def train_model(args):
     
     # Create datasets using the new data module
     train_dataset, eval_dataset, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
+    clear_memory(force_gc=False)
     
     # Create dynamic data collator
     data_collator = create_data_collator(tokenizer, args.model_type, args.pad_to_multiple_of, is_training=True)
@@ -648,6 +674,8 @@ def train_model(args):
         trainer.save_model()
         print_log("Full model saved")
 
+    clear_memory(force_gc=True)
+
     print_log("Running automatic inference with best checkpoint...")
     final_results, final_eval = rouge_callback.run_final_inference(model, tokenizer, output_dir)
     
@@ -700,6 +728,9 @@ def main():
 
     print_log(f"Use chat template: {args.use_chat_template}")
     print_log(f"Dynamic padding: pad_to_multiple_of={args.pad_to_multiple_of}")
+
+    del tokenizer
+    clear_memory(force_gc=False)
     
     # Create timestamped output directory
     model_id = get_model_id_from_path(args.model_name)
@@ -736,9 +767,12 @@ def main():
         if args.lora_model_path:
             print_log(f"Loading LoRA model from {args.lora_model_path}")
             model = PeftModel.from_pretrained(model, args.lora_model_path)
+            clear_memory(force_gc=False)
         
         _, _, test_dataset = create_datasets(args, tokenizer, fewshot_examples)
         
+        clear_memory(force_gc=True)
+
         inference_callback = CustomCallback(args, test_dataset, tokenizer, fewshot_examples)
         inference_results = inference_callback.generate_candidates_optimized(model, tokenizer, test_dataset)
         
@@ -753,12 +787,15 @@ def main():
             json.dump(inference_results, f, ensure_ascii=False, indent=2)
         
         print_log("Inference Results:")
-        # for key, value in eval_results.items():
-        #     if isinstance(value, float):
-        #         print_log(f"  {key}: {value:.4f}")
-        #     else:
-        #         print_log(f"  {key}: {value}")
+        for key, value in eval_results.items():
+            if isinstance(value, float):
+                print_log(f"  {key}: {value:.4f}")
+            else:
+                print_log(f"  {key}: {value}")
 
+    print_log("Execution complete")
+    clear_memory(force_gc=True)
+    
 if __name__ == "__main__":
     main()
 
