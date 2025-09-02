@@ -57,7 +57,7 @@ class EntailmentDataset(Dataset):
             })
 
         if self.use_chat_template:
-            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.\n답변은 [설명] {output} 형식으로 작성하세요.\n설명문에 포함되는 '함의', '모순' 관계는 한국어로 작성하세요."}]
+            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.\n**답변은 '[설명] {output}' 형식으로 작성하세요.**\n설명문에 포함되는 '함의', '모순' 관계는 한국어로 작성하세요."}]
 
             if examples: 
                 example_content = "다음은 자연어 추론 과제의 예시입니다:\n\n"
@@ -145,8 +145,10 @@ class EntailmentDataset(Dataset):
 
                 # Logging for Debugging
                 decoded = self.tokenizer.decode(input_ids, skip_special_tokens=False)
-                print_log(f"[DBG] Decoded total tokens (last 100 chars): {decoded[-100:]}")
-                print_log(f"[DBG] Prefix Decoded (last 100 chars): {self.tokenizer.decode(prefix_input_ids, skip_special_tokens=False)[-100:]}")
+                decoded_prefix = self.tokenizer.decode(prefix_input_ids, skip_special_tokens=False)
+
+                print_log(f"[DBG] Decoded total tokens (last 100 chars): {decoded}")
+                print_log(f"[DBG] Decoded prefix tokens (last 100 chars): {decoded_prefix}")
                 print_log(f"[DBG] Input IDs: {input_ids.tolist()}")
                 print_log(f"[DBG] Attention Mask: {attention_mask.tolist()}")
                 print_log(f"[DBG] Shape Input IDs: {input_ids.shape}")
@@ -189,7 +191,7 @@ class EntailmentDataset(Dataset):
                     truncation=True,
                     return_tensors="pt",
                     max_length=self.max_input_length,
-                    add_special_tokens=True,
+                    add_special_tokens=False,
                 )
 
                 input_ids = input_encoding["input_ids"].squeeze(0)  # (1, L) -> (L,)
