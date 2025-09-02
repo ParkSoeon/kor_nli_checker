@@ -11,7 +11,7 @@ def print_log(message):
     print(f"[{timestamp}] [LOG] {message}")
 
 class EntailmentDataset(Dataset):
-    def __init__(self, data_path, tokenizer, max_input_length=1024, max_output_length=256, 
+    def __init__(self, data_path, tokenizer, max_input_length=1024, max_output_length=80, 
                  model_type="causal", is_training=True, use_chat_template=True, 
                  fewshot_examples=None, num_fewshot=1):
         self.tokenizer = tokenizer
@@ -416,7 +416,7 @@ def create_data_collator(tokenizer, model_type="causal", pad_to_multiple_of=8, i
                     else:
                         result[key] = torch.tensor(value).unsqueeze(0)
                 else:
-                    result[key] = [value]
+                    result[key] = [value] # Keep other fields as list
             
             return result
         
