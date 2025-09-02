@@ -57,7 +57,15 @@ class EntailmentDataset(Dataset):
             })
 
         if self.use_chat_template:
-            messages = [{"role": "system", "content": "당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.\n**답변은 '[설명] {output}' 형식으로 작성하세요.**\n설명문에 포함되는 '함의', '모순' 관계는 한국어로 작성하세요."}]
+            system_content = """당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.
+
+**중요한 규칙:**
+1. 반드시 '[설명] '으로 시작해서 답변하세요.
+2. 설명은 완전한 문장으로 작성하세요.
+3. '함의', '모순', '중립' 등의 관계를 명확히 설명하세요.
+4. 완전한 문장으로 설명문을 생성하세요."""
+
+            messages = [{"role": "system", "content": system_content}]
 
             if examples: 
                 example_content = "다음은 자연어 추론 과제의 예시입니다:\n\n"
