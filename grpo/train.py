@@ -1,4 +1,4 @@
-# train.py - 개선된 버전
+# train.py
 
 from trl import GRPOConfig, GRPOTrainer
 from transformers import AutoTokenizer, TrainingArguments, DataCollatorForLanguageModeling
@@ -93,7 +93,7 @@ def create_grpo_trainer(
         return_tensors="pt"
     )
 
-    # Optimized GRPO configuration
+    # 개선된 GRPO configuration
     grpo_config = GRPOConfig(
         output_dir=output_dir,
         learning_rate=learning_rate,
@@ -101,8 +101,8 @@ def create_grpo_trainer(
         num_train_epochs=epochs,
         
         # Logging and saving
-        logging_steps=max(10, len(dataset) // (batch_size * 10)),  # Adaptive logging
-        save_steps=max(50, len(dataset) // (batch_size * 5)),      # Adaptive saving
+        logging_steps=max(10, len(dataset) // (batch_size * 10)),
+        save_steps=max(50, len(dataset) // (batch_size * 5)),
         save_total_limit=2,
         
         # Memory optimization
@@ -111,17 +111,18 @@ def create_grpo_trainer(
         fp16=torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7,
         bf16=torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8,
         
-        # Generation parameters
-        num_generations=3,  # Reduced for memory efficiency
+        # Generation parameters - GRPO 전용 설정 추가
+        num_generations=5,  # 5개 후보 생성 (원래 의도에 맞게)
         max_prompt_length=230,
         max_completion_length=64,
         temperature=0.7,
         top_p=0.95,
         do_sample=True,
         
-        # Gradient settings
+        # Gradient settings - 중요한 클리핑 설정
         gradient_accumulation_steps=kwargs.get('gradient_accumulation_steps', max(1, 8 // batch_size)),
-        max_grad_norm=1.0,  # Gradient clipping
+        max_grad_norm=1.0,  # Gradient clipping - GRPO에서 매우 중요
+        gradient_checkpointing=True,  # 메모리 효율성
         
         # Optimizer settings
         adam_beta1=0.9,
@@ -132,12 +133,19 @@ def create_grpo_trainer(
         # Learning rate scheduler
         lr_scheduler_type="cosine",
         warmup_ratio=0.1,
+        warmup_steps=kwargs.get('warmup_steps', 100),  # 명시적 warmup steps
+        
+        # GRPO specific settings
+        num_ppo_epochs=1,  # GRPO는 보통 1 epoch per update
+        init_kl_coef=0.2,   # KL divergence coefficient 추가
+        adap_kl_ctrl=True,  # Adaptive KL control
+        target_kl=0.1,     # Target KL divergence
         
         # Reporting
         report_to="wandb" if kwargs.get('use_wandb', True) else None,
         
         # Additional optimizations
-        dataloader_num_workers=0,  # Avoid multiprocessing overhead
+        dataloader_num_workers=0,
         dataloader_pin_memory=True if torch.cuda.is_available() else False,
     )
 
@@ -262,13 +270,6 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
     
     print_log("Starting Adapter B training setup...")
     print_log(f"Adapter A Candidates: {len(adapter_a_candidates)} samples")
-    
-    # Log some adapter A candidates for debugging
-    for i, (key, cands) in enumerate(list(adapter_a_candidates.items())[:2]):
-        print_log(f"Sample {i+1} Key: {key[:50]}...")
-        print_log(f"  Candidates: {len(cands)}")
-        for j, cand in enumerate(cands[:2]):
-            print_log(f"    Cand {j+1}: {cand[:30]}...")
 
     with memory_cleanup():
         train_dataset = GRPODataset(train_data, tokenizer, use_chat_template=True)
@@ -324,9 +325,10 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
                         adapter_a_cands=a_candidates,
                         model=ppl_model,
                         tokenizer=tokenizer,
-                        lambda1=args.lambda1,  # For negative interactive BLEU
-                        lambda2=args.lambda2,  # For ROUGE-L
-                        lambda3=args.lambda3   # For negative PPL penalty
+                        # Adapter B용 별도 가중치 사용
+                        lambda1=1.0,  # For negative interactive BLEU (다양성)
+                        lambda2=0.5,  # For ROUGE-L (품질)
+                        lambda3=0.1   # For negative PPL penalty (유창성)
                     )
                     rewards.append(float(reward))
                 except Exception as e:
