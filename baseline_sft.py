@@ -171,7 +171,10 @@ class CustomCallback(TrainerCallback):
             input_ids = batch_data['input_ids'].to(model.device)
             attention_mask = batch_data['attention_mask'].to(model.device)
 
-            targets = batch_data['output']
+            # targets = batch_data['output']
+            original_targets = eval_dataset_for_eval.data[batch_index]
+            targets = original_targets['output']
+
             if not isinstance(targets, list):
                 targets = [targets]
 
@@ -349,7 +352,7 @@ class CustomCallback(TrainerCallback):
             outputs = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=self.args.max_new_tokens,
+                max_new_tokens=min(self.args.max_new_tokens, self.args.max_output_length),
                 temperature=self.args.temperature if self.args.do_sample else None,
                 top_k=self.args.top_k if self.args.do_sample else None,
                 top_p=self.args.top_p if self.args.do_sample else None,
@@ -402,11 +405,9 @@ class CustomCallback(TrainerCallback):
         results = []
         
         # Create data collator for inference
-        data_collator = create_data_collator(
+        data_collator = EntailmentDataset(
             tokenizer, 
-            self.args.model_type, 
             self.args.pad_to_multiple_of,
-            is_training=False
         )
         
         dataloader = DataLoader(
