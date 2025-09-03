@@ -5,6 +5,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from  peft import LoraConfig, get_peft_model, TaskType
 import copy
 import os
+from datetime import datetime
 
 def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -80,7 +81,17 @@ def save_adapter_safely(adapter_model, save_path: str, model_name: str = "adapte
     return True
 
 def format_input_prompt(premise, proposition, label):
-    prompt = f"""다음 전제와 가설의 관계를 바탕으로 아래의 형식에 따른 '함의 분석 설명문'을 생성하세요.
+    prompt = f"""당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 주어진 관계에 맞는 함의 분석 설명문을 생성하세요.
+
+**중요한 규칙:**
+1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
+2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
+   - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
+3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
+4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
+5. 설명문은 한국어로 작성되어야 합니다.
+
+위의 규칙을 엄격히 준수하여 답변해 주세요.
     
     [전제]: {premise}
     [가설]: {proposition}
