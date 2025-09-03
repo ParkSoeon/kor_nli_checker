@@ -112,11 +112,15 @@ def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
     save_candidate_to_json(adapter_a_candidates, candidate_file)
     print_log(f"Adapter A candidates saved to {candidate_file}")
 
+    formatted_file = os.path.join(args.output_dir, f"adapter_a_candidates_formatted_{timestamp}.json")
+    save_candidate_to_format(adapter_a_candidates, data, formatted_file, adapter_name="adapter_a")
+    print_log(f"Adapter A candidates formatted and saved to {formatted_file}")
+
     return adapter_a_candidates, candidate_file
 
 def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates):
     print_log("Running Adapter B in Experiment Mode")
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = get_timestamp()
 
     # Load PPL model for Adapter B reward
     ppl_model = None
@@ -182,6 +186,10 @@ def run_adapter_b_inference(args, adapter_b_path, tokenizer, data):
     save_candidate_to_json(adapter_b_candidates, candidate_file)
     print_log(f"Adapter B candidates saved to {candidate_file}")
 
+    formatted_file = os.path.join(args.output_dir, f"adapter_b_candidates_formatted_{timestamp}.json")
+    save_candidate_to_format(adapter_b_candidates, data, formatted_file, adapter_name="adapter_b")
+    print_log(f"Adapter B candidates formatted and saved to {formatted_file}")
+
     return adapter_b_candidates, candidate_file
 
 def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, output_dir):
@@ -198,11 +206,15 @@ def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates,
 
         combined_candidates[key] = a_cands + b_cands
 
-    combined_files = os.path.join(output_dir, f"candidates_for_reranking_{timestamp}.json")
-    save_candidate_to_json(combined_candidates, combined_files)
+    combined_raw_file = os.path.join(output_dir, f"combined_candidates_raw_{timestamp}.json")
+    save_candidate_to_json(combined_candidates, combined_raw_file)
+    print_log(f"Combined raw candidates saved to {combined_raw_file}")
+    
+    combined_formatted_file = os.path.join(output_dir, f"combined_candidates_formatted_{timestamp}.json")
+    save_candidate_to_format(adapter_a_candidates, adapter_b_candidates, original_data, combined_formatted_file)
+    print_log(f"Combined candidates saved to {combined_formatted_file}")
 
-    print_log(f"Combined candidates saved to {combined_files}")
-    return combined_candidates
+    return combined_candidates, combined_formatted_file
 
 
 def main():
@@ -215,7 +227,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     print_log("Starting Dual Adapter GRPO Training")
-    base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
+    # base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
 
     # Load datasets
     print_log("Loading Data")
@@ -251,14 +263,12 @@ def main():
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
 
         elif args.adapter_b_only:
-            if not args.adapter_a_candidates_file or not os.path.exists(args.adapter_a_candidate_file):
+            if not args.adapter_a_candidate_file or not os.path.exists(args.adapter_a_candidate_file):
                 raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
 
             print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
             adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
             adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
-
-            # combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
 
         elif args.full_exp:
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
@@ -269,7 +279,7 @@ def main():
             adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
             adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
             
-            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
     
     elif args.inf:
         print_log("Inference Mode Enabled")
@@ -283,7 +293,7 @@ def main():
         elif args.full_exp:
             adapter_a_candidates, _ = run_adapter_a_inference(args, args.adapter_a_path, tokenizer, val_data)
             adapter_b_candidates, _ = run_adapter_b_inference(args, args.adapter_b_path, tokenizer, val_data)
-            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, val_data, args.output_dir)
     
     else:
         print_log("Full Pipeline Mode Enabled")
@@ -302,7 +312,7 @@ def main():
             clear_memory()
             adapter_b_candidates, _ = run_adapter_b_inference(args, adapter_b_dir, tokenizer, val_data)
 
-            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, args.output_dir)
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, val_data, args.output_dir)
 
     print_log("Pipeline Completed")
     print_log(f"Models and candidates saved to {args.output_dir}")
