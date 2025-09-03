@@ -1,4 +1,4 @@
-# ./metrics.py
+# ./metrics.py - 개선된 버전
 
 import numpy as np
 from evaluate import load
@@ -6,103 +6,122 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 import torch
 from typing import List, Dict
 from datetime import datetime
+import gc
 
-def get_timestamp():
+def get_timestamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def print_log(message, prefix="LOG"):
+def print_log(message: str, prefix: str="LOG") -> None:
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def compute_interactive_bleu(sentence_a: List[str], sentence_b: List[str]) -> float:
-    smoothing_function = SmoothingFunction().method1
+# Cache for ROUGE scorer to avoid reloading
+_rouge_scorer = None
 
+def get_rouge_scorer():
+    """Get cached ROUGE scorer"""
+    global _rouge_scorer
+    if _rouge_scorer is None:
+        _rouge_scorer = load("rouge")
+    return _rouge_scorer
+
+def compute_interactive_bleu(generated_candidates: List[str], adapter_a_candidates: List[str]) -> float:
+    """
+    Compute Interactive BLEU between Adapter B candidates and Adapter A candidates
+    Lower values indicate higher diversity (better for Adapter B)
+    """
+    if not generated_candidates or not adapter_a_candidates:
+        return 0.0
+    
+    smoothing_function = SmoothingFunction().method1
     total_bleu = 0.0
     pair_count = 0
 
-    for a in sentence_a:
-        for b in sentence_b:
-            tokens_a = a.split()
-            tokens_b = b.split()
-
-            bleu = sentence_bleu([tokens_a], tokens_b, smoothing_function=smoothing_function)
-            
-            total_bleu += bleu
-            pair_count += 1
+    # Compare every generated candidate with every Adapter A candidate
+    for gen_cand in generated_candidates:
+        for a_cand in adapter_a_candidates:
+            try:
+                tokens_gen = gen_cand.strip().split()
+                tokens_a = a_cand.strip().split()
+                
+                if not tokens_gen or not tokens_a:
+                    continue
+                
+                bleu = sentence_bleu([tokens_a], tokens_gen, smoothing_function=smoothing_function)
+                total_bleu += bleu
+                pair_count += 1
+            except Exception as e:
+                print_log(f"Error computing BLEU: {e}")
+                continue
 
     return total_bleu / pair_count if pair_count > 0 else 0.0
 
 def compute_rouge(generated: str, references: str, rouge_types: List[str] = ["rouge1", "rouge2", "rougeL"]) -> Dict[str, float]:
-
-    scorer = load("rouge")
-    scores = scorer.compute(predictions=[generated], references=[references], rouge_types=rouge_types)
-
-    return {
-        "rouge1": scores["rouge1"],
-        "rouge2": scores["rouge2"],
-        "rougeL": scores["rougeL"],
-        # "combined": lambda1 * scores["rouge1"]["f1"] + lambda2 * scores["rouge2"]["f1"] + lambda3 * scores["rougeL"]["f1"]
-        # "combined": lambda1 * scores["rouge1"] + lambda2 * scores["rouge2"] + lambda3 * scores["rougeL"]
-    }
-
-def compute_perplexity(model, tokenizer, text: str, device) -> float:
-    model.eval()
-    with torch.no_grad():
-        inputs = tokenizer(text, return_tensors='pt', padding=True, truncation=True, max_length=512)
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-
-        outputs = model(**inputs, labels=inputs['input_ids'])
-        loss = outputs.loss
-
-        perplexity = torch.exp(loss)
-
-    return perplexity.item()
-
-def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
-    rouge_scores = compute_rouge(generated, references)
-
-    reward_a = (
-        lambda1 * rouge_scores["rouge1"] + 
-        lambda2 * rouge_scores["rouge2"] + 
-        lambda3 * rouge_scores["rougeL"]
-    )
-
-    for i in compute_rouge(generated, references).keys():
-        print_log(f"=== Adapter A Reward - {i} ===")
-        print_log(f"    Generated: {generated}")
-        print_log(f"    Reference: {references}")
-        print_log(f"    ROUGE-1  : {rouge_scores['rouge1']:.4f}")
-        print_log(f"    ROUGE-2  : {rouge_scores['rouge2']:.4f}")
-        print_log(f"    ROUGE-L  : {rouge_scores['rougeL']:.4f}")
-        print_log(f"    Final Reward: {reward_a:.4f}")
+    """Compute ROUGE scores with caching and error handling"""
+    if not generated.strip() or not references.strip():
+        return {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
+    
+    try:
+        scorer = get_rouge_scorer()
+        scores = scorer.compute(
+            predictions=[generated.strip()], 
+            references=[references.strip()], 
+            rouge_types=rouge_types
+        )
         
-    return reward_a
+        return {
+            "rouge1": float(scores.get("rouge1", 0.0)),
+            "rouge2": float(scores.get("rouge2", 0.0)),
+            "rougeL": float(scores.get("rougeL", 0.0)),
+        }
+    except Exception as e:
+        print_log(f"Error computing ROUGE: {e}")
+        return {"rouge1": 0.0, "rouge2": 0.0, "rougeL": 0.0}
 
-def compute_adapter_b_reward(generated: str, references: str, adapter_a_cands: List[str], model=None, tokenizer=None, lambda1: float = 0.0, lambda2: float = 0.0, lambda3: float = 0.0) -> float:
+def compute_perplexity(model, tokenizer, text: str, device="cuda") -> float:
+    """Compute perplexity with proper error handling and memory management"""
+    if not text.strip():
+        return float('inf')
+    
+    try:
+        model.eval()
+        with torch.no_grad():
+            # Tokenize with proper truncation
+            inputs = tokenizer(
+                text.strip(), 
+                return_tensors='pt', 
+                padding=True, 
+                truncation=True, 
+                max_length=512
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    interactive_bleu = compute_interactive_bleu([generated], adapter_a_cands)
+            # Compute loss
+            outputs = model(**inputs, labels=inputs['input_ids'])
+            loss = outputs.loss
 
-    rouge_scores = compute_rouge(generated, references)
-    rouge_l = rouge_scores["rougeL"]
+            # Compute perplexity
+            perplexity = torch.exp(loss).item()
+            
+            # Clean up
+            del inputs, outputs
+            
+            return min(perplexity, 1000.0)  # Cap extremely high values
+            
+    except Exception as e:
+        print_log(f"Error computing perplexity: {e}")
+        return 100.0  # Return reasonable default
+    finally:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    ppl_penalty = 0.0
-    if model is not None and tokenizer is not None:
-        ppl = compute_perplexity(model, tokenizer, generated)
-        ppl_penalty = -np.log(ppl) # Lower Perplexity == Higher Reward
-
-    reward_b = (
-        -lambda1 * interactive_bleu + 
-        lambda2 * rouge_l +
-        -lambda3 * ppl_penalty
-    )
-
-    for i in compute_rouge(generated, references).keys():
-        print_log(f"=== Adapter B Reward - {i} ===")
-        print_log(f"    Generated: {generated}")
-        print_log(f"    Reference: {references}")
-        print_log(f"    Interactive BLEU: {interactive_bleu:.4f}")
-        print_log(f"    ROUGE-L       : {rouge_l:.4f}")
-        print_log(f"    PPL Penalty   : {ppl_penalty:.4f}")
-        print_log(f"    Final Reward : {reward_b:.4f}")
-        
-    return reward_b
+def compute_adapter_a_reward(generated: str, references: str, lambda1: float = 0.5, lambda2: float = 0.3, lambda3: float = 0.2) -> float:
+    """
+    Compute reward for Adapter A based on ROUGE scores
+    Higher ROUGE scores = Higher reward (better accuracy)
+    """
+    if not generated.strip() or not references.strip():
+        return 0.0
+    
+    try:
+        rouge_scores = compute
