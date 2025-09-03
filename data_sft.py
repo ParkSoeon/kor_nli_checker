@@ -77,10 +77,12 @@ class EntailmentDataset(Dataset):
                     example_content += f"[설명] {ex['output']}\n\n"
 
                 example_content += "이제 새로운 전제와 가설에 대해 관계를 분석해주세요:\n\n"
+                example_content += f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
+
                 messages.append({"role": "user", "content": example_content})
 
-            current_message = f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
-            messages.append({"role": "user", "content": current_message})
+            # current_message = f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
+            # messages.append({"role": "user", "content": current_message})
 
             return messages
 
