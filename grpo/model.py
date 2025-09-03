@@ -1,102 +1,322 @@
-# ./model.py
+# ./main.py
 
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from  peft import LoraConfig, get_peft_model, TaskType
-import copy
+import argparse
 import os
+import wandb
+import numpy as np
+import torch
+import gc
+from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt, save_adapter_safely
+from data import load_data, save_candidate_to_format, load_candidates_from_json, save_candidate_to_json, save_combined_cadidates
+from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
+from train import train_adapter_a, train_adapter_b
 from datetime import datetime
+import copy
+from peft import get_peft_model, LoraConfig, TaskType, PeftModel
+from transformers import AutoTokenizer
 
-def get_timestamp() -> str:
+def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-def print_log(message: str, prefix: str ="LOG") -> None:
+def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def load_model_and_tokenizer(model_name, device='cuda'):
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name, 
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map='auto' if torch.cuda.is_available() else None
-    )
+def clear_memory():
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     
-    # if tokenizer.pad_token is None:
-    #     tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-    #     model.resize_token_embeddings(len(tokenizer))
+def parse_args():
+    parser = argparse.ArgumentParser(description="Dual Adapter GRPO Trainer")
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-        print_log(f"[DBG] Set pad_token to eos_token: {tokenizer.pad_token}")
-    elif tokenizer.pad_token == '<|end_of_text|>':
-        tokenizer.pad_token = tokenizer.eos_token
-        print_log(f"[DBG] Changed pad_token from <|end_of_text|> to eos_token: {tokenizer.pad_token}")
+    parser.add_argument('--model_name', type=str, required=True, help='Pre-trained model name or path')
+    parser.add_argument('--train_data', type=str, required=True, help='Path to training data JSON file')
+    parser.add_argument('--val_data', type=str, required=True, help='Path to validation data JSON file')
+    parser.add_argument('--output_dir', type=str, required=True, help='Directory to save models and outputs')
+    parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
     
-    return model, tokenizer
+    parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
+    parser.add_argument('--batch_inf_size', type=int, default=1, help='Inference batch size for candidate generation')
+    parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for optimizer')
+    parser.add_argument('--num_candidates', type=int, default=5, help='Number of candidates to generate')
+    parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
+    parser.add_argument('--do_sample', action='store_true', help='Enable do_sample for candidate generation')
 
-def load_adapter_model(base_model_name: str, adapter_path: str, device="cuda"):
-    base_model, tokenizer = load_model_and_tokenizer(base_model_name, device)
+    parser.add_argument('--lambda1', type=float, default=0.5, help='Weight for ROUGE-1 in Adapter A reward')
+    parser.add_argument('--lambda2', type=float, default=0.3, help='Weight for ROUGE-2 in Adapter A reward')
+    parser.add_argument('--lambda3', type=float, default=0.2, help='Weight for ROUGE-L in Adapter A reward')
 
-    if os.path.exists(os.path.join(adapter_path, "adapter_config.json")):
-        adapter_model = PeftModel.from_pretrained(base_model, adapter_path)
-        print_log(f"Loaded adapter model from {adapter_path}")
-    else:
-        adapter_weights_path = os.path.join(adapter_path, "adapter_weights.pth")
-        if os.path.exists(adapter_weights_path):
-            lora_config = create_lora_config()
-            adapter_model = get_peft_model(base_model, lora_config)
-            adapter_model.load_state_dict(torch.load(adapter_weights_path, map_location=device))
-            print_log(f"Loaded adapter weights from {adapter_weights_path}")
-        else:
-            raise FileNotFoundError(f"No adapter found at {adapter_path}")
+    parser.add_argument('--lora_r', type=int, default=8, help='LoRA rank')
+    parser.add_argument('--lora_alpha', type=int, default=16, help='LoRA alpha')
+    parser.add_argument('--lora_dropout', type=float, default=0.1, help='LoRA dropout rate')
 
-    return adapter_model, tokenizer
+    parser.add_argument('--ppl_model', type=str, required=True, help='Model name for PPL calculation in Adapter B reward')
 
-def create_lora_config(r=8, alpha=16, dropout=0.1):
-    config = LoraConfig(
-        r=r,
-        lora_alpha=alpha,
-        target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "up_proj", "down_proj"],
-        lora_dropout=dropout,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM
-    )
-    return config
-
-def create_dual_adapters(base_model, lora_config):
-    adapter_a = get_peft_model(copy.deepcopy(base_model), lora_config)
-    adapter_b = get_peft_model(copy.deepcopy(base_model), lora_config)
+    parser.add_argument('--train', action='store_true', help='Enable training mode')
+    parser.add_argument('--inf', action='store_true', help='Enable inference mode')
+    parser.add_argument('--adapter_a_only', action='store_true', help='Enable experiment mode with reduced data and epochs for quick testing')
+    parser.add_argument('--adapter_b_only', action='store_true', help='Enable experiment mode with reduced data and epochs for quick testing')
+    parser.add_argument('--full_exp', action='store_true', help='Disable experiment mode for full training')
     
-    return adapter_a, adapter_b
+    parser.add_argument('--adapter_a_path', type=str, default=None, help='Path to pre-trained Adapter A model (for Adapter B training)')
+    parser.add_argument('--adapter_b_path', type=str, default=None, help='Path to pre-trained Adapter B model (for inference)')
+    parser.add_argument('--adapter_a_candidate_file', type=str, default=None, help='Path to pre-generated Adapter A candidates JSON file')
 
-def save_adapter_safely(adapter_model, save_path: str, model_name: str = "adapter"):
-    os.makedirs(save_path, exist_ok=True)
+    # parser.add_argument('--gradient_checkpointing', action='store_true', help='Enable gradient checkpointing to save memory')
 
+    return parser.parse_args()
+
+def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
+    print_log("Running Adapter A in Experiment Mode")
     timestamp = get_timestamp()
 
-    adapter_model.save_pretrained(save_path)
-    print_log(f"Adapter model saved to {save_path}")
+    lora_config = create_lora_config(
+        r=args.lora_r,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout
+    )
+    # adapter_a, _ = create_dual_adapters(base_model, lora_config)
+    adapter_a = get_peft_model(base_model, lora_config)
 
-    return True
+    adapter_a = train_adapter_a(
+        adapter_a, tokenizer, train_data, val_data, args.output_dir, args
+    )
 
-def format_input_prompt(premise, proposition, label):
-    prompt = f"""당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 주어진 관계에 맞는 함의 분석 설명문을 생성하세요.
+    adapter_a_model_dir = os.path.join(args.output_dir, f"adapter_a_final_{timestamp}")
+    os.makedirs(adapter_a_model_dir, exist_ok=True)
+    adapter_a.save_pretrained(adapter_a_model_dir)
 
-**중요한 규칙:**
-1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
-2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
-   - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
-3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
-4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
-5. 설명문은 한국어로 작성되어야 합니다.
+    print_log(f"Adapter A Model saved to {args.output_dir}")
+    print_log("Adapter A Training Complete")
 
-위의 규칙을 엄격히 준수하여 답변해 주세요.
+    if not args.train:
+        del adapter_a
+        clear_memory()
+        return adapter_a_model_dir
+
+    return adapter_a, adapter_a_model_dir
+
+def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
+    timestamp = get_timestamp()
+
+    adapter_a_candidates = generate_adapter_a_candidates(
+        adapter_a_path, tokenizer, data,
+        batch_size=args.batch_inf_size,
+        num_candidates=args.num_candidates,
+        device=args.device,
+        use_model_path=True,
+        base_model_name=args.model_name
+    )
+
+    candidate_file = os.path.join(args.output_dir, f"adapter_a_candidates_inference_{timestamp}.json")
+    save_candidate_to_json(adapter_a_candidates, candidate_file)
+    print_log(f"Adapter A candidates saved to {candidate_file}")
+
+    formatted_file = os.path.join(args.output_dir, f"adapter_a_candidates_formatted_{timestamp}.json")
+    save_candidate_to_format(adapter_a_candidates, data, formatted_file, adapter_name="adapter_a")
+    print_log(f"Adapter A candidates formatted and saved to {formatted_file}")
+
+    return adapter_a_candidates, candidate_file
+
+def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates):
+    print_log("Running Adapter B in Experiment Mode")
+    timestamp = get_timestamp()
+
+    # Load PPL model for Adapter B reward
+    ppl_model = None
+    if args.ppl_model:
+        print_log(f"Loading PPL model {args.ppl_model} for Adapter B reward")
+        ppl_model, _ = load_model_and_tokenizer(args.ppl_model, device=args.device)
+
+    lora_config = create_lora_config(
+        r=args.lora_r,
+        alpha=args.lora_alpha,
+        dropout=args.lora_dropout
+    )
+
+    adapter_b = get_peft_model(copy.deepcopy(base_model), lora_config)
+
+    adapter_b = train_adapter_b(
+        adapter_b, tokenizer, train_data, val_data, 
+        adapter_a_candidates, args.output_dir, args, ppl_model
+    )
+
+    # print_log("Generating Adapter B Candidates for ALL data")
+    # adapter_b_candidates = generate_adapter_b_candidates(
+    #     adapter_b, tokenizer, val_data, 
+    #     batch_size=args.batch_size, 
+    #     num_candidates=args.num_candidates, 
+    #     device=args.device
+    # )
+
+    # adapter_b_val_file = os.path.join(args.output_dir, f"adapter_b_val_candidates_{timestamp}.json")
+    # save_candidate_to_json(adapter_b_candidates, adapter_b_val_file)
+
+    adapter_b_model_dir = os.path.join(args.output_dir, f"adapter_b_final_{timestamp}")
+    os.makedirs(adapter_b_model_dir, exist_ok=True)
+    adapter_b.save_pretrained(adapter_b_model_dir)
+
+    print_log(f"Adapter B Model and Candidates saved to {args.output_dir}")
+    print_log("Adapter B Training Complete")
+
+    if ppl_model:
+        del ppl_model
+        clear_memory()
+
+    if not args.train:
+        del adapter_b
+        clear_memory()
+        return adapter_b_model_dir
+
+    return adapter_b, adapter_b_model_dir
+
+def run_adapter_b_inference(args, adapter_b_path, tokenizer, data):
+    timestamp = get_timestamp()
+
+    adapter_b_candidates = generate_adapter_b_candidates(
+        adapter_b_path, tokenizer, data,
+        batch_size=args.batch_inf_size,
+        num_candidates=args.num_candidates,
+        device=args.device,
+        use_model_path=True,
+        base_model_name=args.model_name
+    )
+
+    candidate_file = os.path.join(args.output_dir, f"adapter_b_candidates_inference_{timestamp}.json")
+    save_candidate_to_json(adapter_b_candidates, candidate_file)
+    print_log(f"Adapter B candidates saved to {candidate_file}")
+
+    formatted_file = os.path.join(args.output_dir, f"adapter_b_candidates_formatted_{timestamp}.json")
+    save_candidate_to_format(adapter_b_candidates, data, formatted_file, adapter_name="adapter_b")
+    print_log(f"Adapter B candidates formatted and saved to {formatted_file}")
+
+    return adapter_b_candidates, candidate_file
+
+def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, original_data, output_dir):
+    print_log("Combining Adapter A and Adapter B Candidates for Reranking")
+    timestamp = get_timestamp()
+
+    combined_candidates = {}
+
+    all_keys = set(adapter_a_candidates.keys()) | set(adapter_b_candidates.keys())
+
+    for key in all_keys:  # 모든 키에 대해 처리
+        a_cands = adapter_a_candidates.get(key, [])
+        b_cands = adapter_b_candidates.get(key, [])
+        combined_candidates[key] = a_cands + b_cands
+
+    combined_raw_file = os.path.join(output_dir, f"combined_candidates_raw_{timestamp}.json")
+    save_candidate_to_json(combined_candidates, combined_raw_file)
+    print_log(f"Combined raw candidates saved to {combined_raw_file}")
     
-    [전제]: {premise}
-    [가설]: {proposition}
-    [관계]: {label}
+    combined_formatted_file = os.path.join(output_dir, f"combined_candidates_formatted_{timestamp}.json")
+    save_combined_cadidates(adapter_a_candidates, adapter_b_candidates, original_data, combined_formatted_file)  # 올바른 함수 사용
+    print_log(f"Combined candidates saved to {combined_formatted_file}")
+
+    return combined_candidates, combined_formatted_file
+
+def main():
+    args = parse_args()
+
+    run_timestamp = get_timestamp() 
+
+    wandb.init(project="2025HCLT(dual_adapter_grpo)", name=f"grpo_run_{get_timestamp()}")
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    print_log("Starting Dual Adapter GRPO Training")
+
+    # Load datasets
+    print_log("Loading Data")
+    train_data = load_data(args.train_data)
+    val_data = load_data(args.val_data)
+    print_log(f"Training samples: {len(train_data)}, Validation samples: {len(val_data)}")
+
+    print_log("=== Data Samples ===")
+    if len(train_data) > 0:
+        sample = train_data[0]
+        print_log(f"Sample Keys: {list(sample.keys())}")
+        print_log(f"Sample Premise: {sample['input']['premise']}")
+        print_log(f"Sample Proposition: {sample['input']['proposition']}")
+        print_log(f"Sample Label: {sample['input']['label']}")
+        if 'output' in sample:
+            print_log(f"Sample Reference Output: {sample['output']}")
+    print_log("====================")
+
+    base_model = None
+    tokenizer = None
+
+    if not args.inf:
+        print_log("Loading Base Model for Training")
+        base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
+    else:
+        print_log("Inference Mode: Skipping Base Model Loading")
+        tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+
+    if args.train:
+        print_log("Training Mode Enabled")
+
+        if args.adapter_a_only:
+            adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+
+        elif args.adapter_b_only:
+            if not args.adapter_a_candidate_file or not os.path.exists(args.adapter_a_candidate_file):
+                raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
+
+            print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
+            adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+
+        elif args.full_exp:
+            adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+
+            del adapter_a
+            clear_memory()
+
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
     
-    [함의 분석 설명문]: """
+    elif args.inf:
+        print_log("Inference Mode Enabled")
+
+        if args.adapter_a_only:
+            adapter_a_candidates, _ = run_adapter_a_inference(args, args.adapter_a_path, tokenizer, val_data)
+
+        elif args.adapter_b_only:
+            adapter_b_candidates, _ = run_adapter_b_inference(args, args.adapter_b_path, tokenizer, val_data)
+
+        elif args.full_exp:
+            adapter_a_candidates, _ = run_adapter_a_inference(args, args.adapter_a_path, tokenizer, val_data)
+            adapter_b_candidates, _ = run_adapter_b_inference(args, args.adapter_b_path, tokenizer, val_data)
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, val_data, args.output_dir)
     
-    return prompt
+    else:
+        print_log("Full Pipeline Mode Enabled")
+
+        if args.adapter_a_only:
+            adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+            clear_memory()
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, val_data)
+
+        elif args.full_exp:
+            adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
+            clear_memory()
+            adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
+
+            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            clear_memory()
+            adapter_b_candidates, _ = run_adapter_b_inference(args, adapter_b_dir, tokenizer, val_data)
+
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, val_data, args.output_dir)
+
+    print_log("Pipeline Completed")
+    print_log(f"Models and candidates saved to {args.output_dir}")
+
+    if not args.inf:
+        wandb.finish()
+
+if __name__ == "__main__":
+    main()
