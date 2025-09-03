@@ -450,7 +450,7 @@ class CustomCallback(TrainerCallback):
             premise = extract_keys(batch_data, 'premise', '')
             proposition = extract_keys(batch_data, 'proposition', '')
             label = extract_keys(batch_data, 'label', '')
-            # target = extract_keys(batch_data, 'output', '')
+            target = extract_keys(batch_data, 'output', '')
 
             print_log(f"Processing Example {batch_index+1}:")
             print_log(f"[Extracted]  ID: {example_id}")
@@ -471,7 +471,7 @@ class CustomCallback(TrainerCallback):
                 "premise": str(premise) if premise is not None else "",
                 "proposition": str(proposition) if proposition is not None else "",
                 "label": str(label) if label is not None else "",
-                # "output": str(target) if target is not None else "",
+                "output": str(target) if target is not None else "",
                 "candidates": [str(candidate) for candidate in candidates],
                 "best_candidate": str(best_candidate)
             }
