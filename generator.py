@@ -1,4 +1,6 @@
 
+# ./generator.py - 메모리 최적화된 버전
+
 import torch
 import gc
 from tqdm import tqdm
