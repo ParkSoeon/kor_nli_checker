@@ -174,7 +174,7 @@ class EntailmentDataset(Dataset):
                     "input_ids": input_ids,
                     "attention_mask": attention_mask,
                     "labels": labels,
-                    "output": output
+                    # "output": output
                 }
 
             else:
