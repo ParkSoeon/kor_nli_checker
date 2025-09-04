@@ -1,54 +1,58 @@
-# ./data.py
+# ./generator.py
 
-import json
 import torch
-from torch.utils.data import Dataset, DataLoader
-from typing import List, Dict, Any
+from tqdm import tqdm
+from typing import List, Dict
 from model import format_input_prompt
 
-def load_data(dataset: str) -> List[Dict[str, Any]]:
-    with open(dataset, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-    return data
+def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_tokens=64, temperature=0.7, top_p=0.95, device: str = 'cuda') -> List[str]:
+    model.eval()
+    candidates = []
 
-def save_candidate_to_json(candidates: Dict[str, List[str]], output_dir: str):
-    with open(output_dir, 'w', encoding='utf-8') as f:
-        json.dump(candidates, f, ensure_ascii=False, indent=4)
+    with torch.no_grad():
+        inputs = tokenizer(
+            input_text,
+            return_tensors='pt',
+            truncation=True,
+            max_length=512,
+        ).to(device)
+        # inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-def load_candidates_from_json(candidate_file: str) -> Dict[str, List[str]]:
-    with open(candidate_file, 'r', encoding='utf-8') as f:
-        candidates = json.load(f)
+        for _ in range(num_candidates):
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                num_return_sequences=1,
+                do_sample=True,
+                temperature=temperature,
+                top_p=top_p,
+                pad_token_id=tokenizer.eos_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+            )
+
+            generated_text = tokenizer.decode(
+                outputs[0][inputs['input_ids'].shape[1]:],
+                skip_special_tokens=True
+            ).strip()
+            
+            candidates.append(generated_text)
+
     return candidates
 
-class GRPODataset(Dataset):
-    def __init__(self, data_samples: List[Dict], tokenizer, max_length=512):
-        self.data_samples = data_samples
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        
-    def __len__(self):
-        return len(self.data_samples)
+def generate_adapter_a_candidates(adapter_a, tokenizer, data_smaples: List[Dict], batch_size=1, num_candidates=5) -> Dict[str, List[str]]:
+    all_candidates = {}
 
-    def __getitem__(self, index):
-        sample = self.data_samples[index]
-        premise = sample['input']["premise"]
-        proposition = sample['input']["proposition"]
-        label = sample['input']["label"]
-        reference = sample.get("output", "")
+    for i in tqdm(range(0, len(data_samples), batch_size), desc="Generating Adapter A Candidates"):
+        batch_samples = data_samples[i:i+batch_size]
 
-        # query = format_input_prompt(premise, proposition, label)
+        for sample in batch:
+            input_text = format_input_prompt(sample['input']["premise"], sampele['input']['input']["proposition"], sample["label"])
+            candidates = generate_candidates(adapter_a, tokenizer, input_text, num_candidates, device=device)
 
-        prompt = format_input_prompt(
-            sample['input']["premise"],
-            sample['input']["proposition"],
-            sample['input']["label"]
-        )
+            key = f"{sample['input']['premise']} ||| {sample['proposition']}"
+            all_candidates[key] = candidates
 
-        return {
-            "prompt": prompt,
-            # "query": query,
-            "premise": premise,
-            "proposition": proposition,
-            "labels": label,
-            "reference": reference
-        }
+        return all_candidates
+
+def generate_adapter_b_candidates(adapter_b, tokenizer, data_samples: List[Dict], batch_size=1, num_candidates=5, device: str = 'cuda') -> Dict[str, List[str]]:
+    return generate_adapterq_a_candidates(adapter_b, tokenizer, data_samples, batch_size, num_candidates, device)
