@@ -62,7 +62,7 @@ def get_parse():
     parser.add_argument("--test_path", type=str, required=True, help="Path to the test file.")
     parser.add_argument("--output_dir", type=str, default="./output", help="Output directory.")
     parser.add_argument("--max_input_length", type=int, default=512, help="Maximum input length.")
-    parser.add_argument("--max_output_length", type=int, default=256, help="Maximum target length.")
+    parser.add_argument("--max_output_length", type=int, default=110, help="Maximum target length.")
     
     # Training arguments
     parser.add_argument("--per_device_train_batch_size", type=int, default=8, help="Training batch size per device.")
@@ -87,11 +87,11 @@ def get_parse():
         
     # Generation arguments
     parser.add_argument("--num_cands", type=int, default=3, help="Number of candidates to generate.")
-    parser.add_argument("--max_new_tokens", type=int, default=256, help="Maximum new tokens to generate.")
+    parser.add_argument("--max_new_tokens", type=int, default=75, help="Maximum new tokens to generate.")
     parser.add_argument("--temperature", type=float, default=1.0, help="Temperature for sampling.")
     parser.add_argument("--top_k", type=int, default=50, help="Top-k sampling.")
     parser.add_argument("--top_p", type=float, default=0.95, help="Top-p sampling.")
-    parser.add_argument("--repetition_penalty", type=float, default=1.1, help="Repetition penalty.")
+    parser.add_argument("--repetition_penalty", type=float, default=1.05, help="Repetition penalty.")
     parser.add_argument("--do_sample", action="store_true", help="Enable sampling for generation.")
     parser.add_argument("--num_beams", type=int, default=1, help="Number of beams for beam search (1 for greedy decoding).")
     
@@ -405,9 +405,11 @@ class CustomCallback(TrainerCallback):
         results = []
         
         # Create data collator for inference
-        data_collator = EntailmentDataset(
+        data_collator = create_data_collator(
             tokenizer, 
             self.args.pad_to_multiple_of,
+            self.args.model_type,
+            is_training=False
         )
         
         dataloader = DataLoader(
