@@ -7,7 +7,7 @@ from data import load_data, GRPODataset
 from typing import Callable, Dict, List
 from model import format_input_prompt
 from datetime import datetime
-from metrics import compute_adapter_a_reward, compute_adapter_b_reward
+from metric import compute_adapter_a_reward, compute_adapter_b_reward
 
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -16,10 +16,20 @@ def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def creat_grpo_trainer(
+def create_grpo_trainer(
     model, tokenizer, dataset, reward_function: Callable,
-    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 8, epochs: int = 3, **kwargs
+    output_dir: str, learning_rate: float = 5e-5, batch_size: int = 8, epochs: int = 3, 
+    num_candidates: int = 5, **kwargs
 ):
+
+    num_generations = num_candidates
+
+    if batch_size % num_generations != 0:
+        generation_batch_size = ((batch_size // num_generations) + 1) * num_generations
+        print_log(f"Adjusting generation_batch_size from {batch_size} to {generation_batch_size} to be divisible by num_generations ({num_generations})")
+    else:
+        generation_batch_size = batch_size
+
     grpo_config = GRPOConfig(
         output_dir=output_dir,
         learning_rate=learning_rate,
@@ -27,14 +37,13 @@ def creat_grpo_trainer(
         num_train_epochs=epochs,
         logging_steps=10,
         save_steps=100,
-        save_total_limit=2,
         remove_unused_columns=False,
         fp16=torch.cuda.is_available(),
         report_to="wandb",
         dataloader_drop_last=True,
         
-        num_generations=8,
-        generation_batch_size=8,
+        num_generations=num_generations,
+        generation_batch_size=generation_batch_size,
         **kwargs
     )
 
@@ -47,9 +56,13 @@ def creat_grpo_trainer(
 
     return grpo_trainer
 
-def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List[Dict], output_dir: str, args) -> torch.nn.Module:
+def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List[Dict], 
+                    output_dir: str, args) -> torch.nn.Module:
     
-    train_dataset = GRPODataset(train_data, tokenizer)
+    use_chat_template = args.use_chat_template
+    print_log(f"Use Chat Template: {use_chat_template}")
+
+    train_dataset = GRPODataset(train_data, tokenizer, use_chat_template=use_chat_template)
 
     print_log(f"Train Dataset Size: {len(train_dataset)}")
     print_log(f"=== Train Dataset Samples ===")
@@ -64,10 +77,39 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
         print_log(f"Reference  : {sample['reference']}")
 
     reference_map = {}
-
     for sample in train_data:
-        query = format_input_prompt(sample['input']["premise"], sample['input']["proposition"], sample['input']["label"])
-        reference_map[query] = sample.get("output", "")
+        base_query = format_input_prompt(
+            sample['input']["premise"], 
+            sample['input']["proposition"], 
+            sample['input']["label"]
+        )
+        
+        # Chat template 적용
+        if use_chat_template:
+            # SFT 베이스라인과 동일한 system prompt 사용
+            system_content = """당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.
+
+**중요한 규칙:**
+1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
+2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
+   - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
+3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
+4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
+5. 설명문은 한국어로 작성되어야 합니다.
+
+위의 규칙을 엄격히 준수하여 답변해 주세요."""
+            
+            messages = [
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": base_query}
+            ]
+            formatted_query = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            formatted_query = base_query
+            
+        reference_map[formatted_query] = sample.get("output", "")
 
     print_log(f"Reference Map Size: {len(reference_map)}")
 
@@ -84,6 +126,8 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
         else:
             completion_texts = completions
         
+        print_log(f"Adapter A Reward Function called with {len(completion_texts)} completions")
+
         for i, completion_text in enumerate(completion_texts):
             # Get corresponding prompt
             prompt = prompts[i] if i < len(prompts) else ""
@@ -106,7 +150,7 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
 
         return rewards
 
-    trainer = creat_grpo_trainer(
+    trainer = create_grpo_trainer(
         model=adapter_a,
         tokenizer=tokenizer,
         dataset=train_dataset,
@@ -115,6 +159,7 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         epochs=args.epochs,
+        num_candidates=args.num_candidates
     )
 
     print_log("Starting Adapter A Training")
@@ -157,6 +202,8 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         else:
             completion_texts = completions
 
+        print_log(f"Adapter B Reward Function called with {len(completion_texts)} completions")
+
         for i, completion_text in enumerate(completion_texts):
             prompt = prompts[i] if i < len(prompts) else ""
             
@@ -184,7 +231,8 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
             print_log(f"    Query    : {prompt}")
             print_log(f"    Generated: {completion_text}")
             print_log(f"    Reference: {reference}")
-            print_log(f"    Adapter A Candidates: {a_candidates}")
+            for j, cand in enumerate(a_candidates):
+                print_log(f"    Adapter A Candidates{j+1}: {cand}")
             print_log(f"    Reward   : {reward:.4f}")
             
             rewards.append(reward)
@@ -192,7 +240,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         return rewards
 
     # Create Trainer
-    trainer = creat_grpo_trainer(
+    trainer = create_grpo_trainer(
         model=adapter_b,
         tokenizer=tokenizer,
         dataset=train_dataset,
@@ -201,6 +249,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         learning_rate=args.learning_rate,
         batch_size=args.batch_size,
         epochs=args.epochs,
+        num_candidates=args.num_candidates
     )
 
     print_log("Starting Adapter B Training")
