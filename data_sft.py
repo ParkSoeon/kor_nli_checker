@@ -60,10 +60,14 @@ class EntailmentDataset(Dataset):
             system_content = """당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.
 
 **중요한 규칙:**
-1. 반드시 '[설명] '으로 시작해서 답변하세요.
-2. 설명은 완전한 문장으로 작성하세요.
-3. '함의', '모순', '중립' 등의 관계를 명확히 설명하세요.
-4. 완전한 문장으로 설명문을 생성하세요."""
+1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
+2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
+   - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
+3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
+4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
+5. 설명문은 한국어로 작성되어야 합니다.
+
+위의 규칙을 엄격히 준수하여 답변해 주세요."""
 
             messages = [{"role": "system", "content": system_content}]
 
@@ -76,7 +80,7 @@ class EntailmentDataset(Dataset):
                     example_content += f"[관계] {ex['label']}\n"
                     example_content += f"[설명] {ex['output']}\n\n"
 
-                example_content += "이제 새로운 전제와 가설에 대해 관계를 분석해주세요:\n\n"
+                example_content += "이제 새로운 전제와 가설에 대해 주어진 관계를 기반으로 설명문을 생성해주세요:\n\n"
                 example_content += f"[전제] {premise}\n[가설] {proposition}\n[관계] {label}"
 
                 messages.append({"role": "user", "content": example_content})
