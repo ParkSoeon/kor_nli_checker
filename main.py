@@ -36,11 +36,12 @@ def parse_args():
     parser.add_argument('--output_dir', type=str, required=True, help='Directory to save models and outputs')
     parser.add_argument('--epochs', type=int, default=3, help='Number of training epochs')
     
-    parser.add_argument('--batch_size', type=int, default=8, help='Training batch size')
+    parser.add_argument('--batch_size', type=int, default=5, help='Training batch size')
     parser.add_argument('--batch_inf_size', type=int, default=1, help='Inference batch size for candidate generation')
     parser.add_argument('--learning_rate', type=float, default=5e-5, help='Learning rate for optimizer')
     parser.add_argument('--num_candidates', type=int, default=5, help='Number of candidates to generate')
     parser.add_argument('--device', type=str, default='cuda', help='Device to use for training')
+    parser.add_argument('--do_sample', action='store_true', help='Enable do_sample for candidate generation')
 
     parser.add_argument('--lambda1', type=float, default=0.5, help='Weight for ROUGE-1 in Adapter A reward')
     parser.add_argument('--lambda2', type=float, default=0.3, help='Weight for ROUGE-2 in Adapter A reward')
@@ -192,7 +193,7 @@ def run_adapter_b_inference(args, adapter_b_path, tokenizer, data):
 
     return adapter_b_candidates, candidate_file
 
-def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, output_dir):
+def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates, original_data, output_dir):
     print_log("Combining Adapter A and Adapter B Candidates for Reranking")
     timestamp = get_timestamp()
 
@@ -200,10 +201,9 @@ def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates,
 
     all_keys = set(adapter_a_candidates.keys()) | set(adapter_b_candidates.keys())
 
-    for key in adapter_a_candidates.keys():
+    for key in all_keys:  # 모든 키에 대해 처리
         a_cands = adapter_a_candidates.get(key, [])
         b_cands = adapter_b_candidates.get(key, [])
-
         combined_candidates[key] = a_cands + b_cands
 
     combined_raw_file = os.path.join(output_dir, f"combined_candidates_raw_{timestamp}.json")
@@ -211,11 +211,10 @@ def combine_candidates_for_reranking(adapter_a_candidates, adapter_b_candidates,
     print_log(f"Combined raw candidates saved to {combined_raw_file}")
     
     combined_formatted_file = os.path.join(output_dir, f"combined_candidates_formatted_{timestamp}.json")
-    save_candidate_to_format(adapter_a_candidates, adapter_b_candidates, original_data, combined_formatted_file)
+    save_combined_cadidates(adapter_a_candidates, adapter_b_candidates, original_data, combined_formatted_file)  # 올바른 함수 사용
     print_log(f"Combined candidates saved to {combined_formatted_file}")
 
     return combined_candidates, combined_formatted_file
-
 
 def main():
     args = parse_args()
@@ -227,7 +226,6 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     print_log("Starting Dual Adapter GRPO Training")
-    # base_model, tokenizer = load_model_and_tokenizer(args.model_name, args.device)
 
     # Load datasets
     print_log("Loading Data")
