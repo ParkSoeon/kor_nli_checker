@@ -48,4 +48,4 @@ def format_input_prompt(premise, proposition, label):
     
     [함의 분석 설명문]: """
     
-    return prompt
+    return prompt.format(premise=premise, proposition=proposition, label=label)
