@@ -4,12 +4,13 @@ import torch
 from tqdm import tqdm
 from typing import List, Dict
 from model import format_input_prompt
+from datetime import datetime
 
 def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_tokens=90, 
+def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_tokens=70, 
                         temperature=0.7, top_p=0.95, device: str = 'cuda', 
                         use_chat_template=True) -> List[str]:
     model.eval()
@@ -78,9 +79,23 @@ def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_
 
 def generate_adapter_a_candidates(adapter_a, tokenizer, data_samples: List[Dict], 
                                 batch_size=1, num_candidates=5, 
-                                device: str="cuda") -> Dict[str, List[str]]:
+                                # device: str="cuda") -> Dict[str, List[str]]:
+                                device: str="cuda", base_model_name: str = None, 
+                                use_chat_template: bool = True, max_new_tokens: int = 70) -> Dict[str, List[str]]: 
     all_candidates = {}
 
+    # adapter_a가 문자열(경로)인 경우 모델 로딩 (추가함)
+    if isinstance(adapter_a, str):
+        from peft import PeftModel
+        from model import load_model_and_tokenizer
+        print_log(f"Loading Adapter A model from {adapter_a}")
+        # 기본 모델명 사용
+        if base_model_name is None:
+            base_model_name = "kakaocorp/kanana-1.5-8b-instruct-2505"  # 기본값
+        base_model, _ = load_model_and_tokenizer(base_model_name, device)
+        adapter_a = PeftModel.from_pretrained(base_model, adapter_a)
+        adapter_a = adapter_a.to(device)
+    # 여기까지 추가함
     print_log(f"Starting candidate generation with Adapter A on {len(data_samples)} samples ===== ")
 
     for i in tqdm(range(0, len(data_samples), batch_size), desc="Generating Adapter A Candidates"):
@@ -108,15 +123,16 @@ def generate_adapter_a_candidates(adapter_a, tokenizer, data_samples: List[Dict]
             
             candidates = generate_candidates(
                 adapter_a, tokenizer, base_prompt, num_candidates, 
-                device=device, use_chat_template=use_chat_template
+                device=device, use_chat_template=use_chat_template,
+                max_new_tokens=max_new_tokens
             )
 
             key = f"{sample['input']['premise']} ||| {sample['input']['proposition']}"
             all_candidates[key] = candidates
 
-        print_log(f"Finished generating candidates with Adapter A ===== ")
+    print_log(f"Finished generating candidates with Adapter A ===== ")
 
-        return all_candidates
+    return all_candidates
 
 def generate_adapter_b_candidates(adapter_b, tokenizer, data_samples: List[Dict], batch_size=1, num_candidates=5, device: str = 'cuda') -> Dict[str, List[str]]:
     # return generate_adapterq_a_candidates(adapter_b, tokenizer, data_samples, batch_size, num_candidates, device)
