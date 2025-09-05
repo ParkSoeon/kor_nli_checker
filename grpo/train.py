@@ -89,13 +89,13 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
             # SFT 베이스라인과 동일한 system prompt 사용
             system_content = """당신은 한국어 자연어 추론(NLI) 전문가입니다. 주어진 전제와 가설을 분석하여 함의 관계를 설명해주세요.
 
-**중요한 규칙:**
-1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
-2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
-   - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
-3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
-4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
-5. 설명문은 한국어로 작성되어야 합니다.
+    **중요한 규칙:**
+    1. 반드시 '[설명] '으로 시작해서 설명문 생성을 시작하세요.
+    2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
+    - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
+    3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
+    4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
+    5. 설명문은 한국어로 작성되어야 합니다.
 
 위의 규칙을 엄격히 준수하여 답변해 주세요."""
             
@@ -106,6 +106,12 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
             formatted_query = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
+
+            formatted_query = formatted_query.replace('<|end_of_text|>', '')
+            empty_system_content = "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|><|start_header_id|>system<|end_header_id|>"
+            if formatted_query.startswith(empty_system_content):
+                formatted_query = formatted_query.replace("<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n\n<|eot_id|>", "<|begin_of_text|>", 1)
+
         else:
             formatted_query = base_query
             
@@ -132,19 +138,47 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
             # Get corresponding prompt
             prompt = prompts[i] if i < len(prompts) else ""
             reference = reference_map.get(prompt, "")
+
+            # # Debugging key matching issues(Just in case)
+            # if not reference:
+            #     print_log(f"=== KEY MATCHING DEBUG ===")
+            #     print_log(f"Current prompt length: {len(prompt)}")
+            #     print_log(f"Current prompt (first 100 chars): {prompt}...")
+            #     print_log(f"Reference map keys count: {len(reference_map)}")
             
+            # # Compare with the first key with reference_map
+            # if reference_map:
+            #     first_key = list(reference_map.keys())[0]
+            #     print_log(f"First ref_map key length: {len(first_key)}")
+            #     print_log(f"First ref_map key (first 100 chars): {first_key}...")
+            #     print_log(f"Keys match: {prompt == first_key}")
+
+            clean_completion = completion_text
+            if clean_completion.startswith("[설명] "):
+                clean_completion = clean_completion[len("[설명] "):].strip()        
+            elif clean_completion.startswith("설명] "):
+                clean_completion = clean_completion[len("설명] "):].strip()
+            elif clean_completion.startswith("설명 "):
+                clean_completion = clean_completion[len("설명 "):].strip()
+            elif clean_completion.startswith("[설명 ]"):
+                clean_completion = clean_completion[len("[설명 ]"):].strip()
+
+            clean_reference = reference
+            if clean_reference.startswith('[설명]'):
+                clean_reference = clean_reference[4:].strip()
+                
             reward = compute_adapter_a_reward(
-                completion_text, reference, 
+                clean_completion, clean_reference, 
                 lambda1=args.lambda1, 
                 lambda2=args.lambda2, 
                 lambda3=args.lambda3
             )
             
-            print_log(f"=== Adapter A Reward {i} ===")
-            print_log(f"    Query    : {prompt}")
-            print_log(f"    Generated: {completion_text}")
-            print_log(f"    Reference: {reference}")
-            print_log(f"    Reward   : {reward:.4f}")
+            # print_log(f"=== Adapter A Reward {i} ===")
+            # print_log(f"    Query    : {prompt}")
+            # print_log(f"    Generated: {completion_text}")
+            # print_log(f"    Reference: {reference}")
+            # print_log(f"    Reward   : {reward:.4f}")
             
             rewards.append(reward)
 
@@ -162,9 +196,9 @@ def train_adapter_a(adapter_a, tokenizer, train_data: List[Dict], val_data: List
         num_candidates=args.num_candidates
     )
 
-    print_log("Starting Adapter A Training")
+    print_log(">> Starting Adapter A Training")
     trainer.train()
-    print_log("Finished Adapter A Training")
+    print_log(">> Finished Adapter A Training")
     return adapter_a
 
 def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List[Dict], adapter_a_candidates: Dict[str, List[str]], output_dir: str, args, ppl_model=None) -> torch.nn.Module:
@@ -227,13 +261,13 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
                 lambda1=args.lambda1, lambda2=args.lambda2, lambda3=args.lambda3
             )
 
-            print_log(f"=== Adapter B Reward {i} ===")
-            print_log(f"    Query    : {prompt}")
-            print_log(f"    Generated: {completion_text}")
-            print_log(f"    Reference: {reference}")
-            for j, cand in enumerate(a_candidates):
-                print_log(f"    Adapter A Candidates{j+1}: {cand}")
-            print_log(f"    Reward   : {reward:.4f}")
+            # print_log(f"=== Adapter B Reward {i} ===")
+            # print_log(f"    Query    : {prompt}")
+            # print_log(f"    Generated: {completion_text}")
+            # print_log(f"    Reference: {reference}")
+            # for j, cand in enumerate(a_candidates):
+            #     print_log(f"    Adapter A Candidates{j+1}: {cand}")
+            # print_log(f"    Reward   : {reward:.4f}")
             
             rewards.append(reward)
         
@@ -252,7 +286,7 @@ def train_adapter_b(adapter_b, tokenizer, train_data: List[Dict], val_data: List
         num_candidates=args.num_candidates
     )
 
-    print_log("Starting Adapter B Training")
+    print_log(">> Starting Adapter B Training")
     trainer.train()
-    print_log("Finished Adapter B Training")
+    print_log(">> Finished Adapter B Training")
     return adapter_b
