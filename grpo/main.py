@@ -104,9 +104,11 @@ def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
         batch_size=args.batch_inf_size,
         num_candidates=args.num_candidates,
         device=args.device,
-        use_model_path=True,
         base_model_name=args.model_name,
+        # 수정사항
+        # use_model_path=True,
         use_chat_template=args.use_chat_template,
+        
     )
 
     candidate_file = os.path.join(args.output_dir, f"adapter_a_candidates_inference_{timestamp}.json")
