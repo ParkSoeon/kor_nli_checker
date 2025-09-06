@@ -10,7 +10,7 @@ def print_log(message, prefix="LOG"):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
 
-def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_tokens=70, 
+def generate_candidates(model, tokenizer, input_text, num_candidates=5, max_new_tokens=110, 
                         temperature=0.7, top_p=0.95, device: str = 'cuda', 
                         use_chat_template=True) -> List[str]:
     model.eval()
@@ -81,7 +81,7 @@ def generate_adapter_a_candidates(adapter_a, tokenizer, data_samples: List[Dict]
                                 batch_size=1, num_candidates=5, 
                                 # device: str="cuda") -> Dict[str, List[str]]:
                                 device: str="cuda", base_model_name: str = None, 
-                                use_chat_template: bool = True, max_new_tokens: int = 70) -> Dict[str, List[str]]: 
+                                use_chat_template: bool = True, max_new_tokens: int = 110) -> Dict[str, List[str]]: 
     all_candidates = {}
 
     # adapter_a가 문자열(경로)인 경우 모델 로딩 (추가함)
