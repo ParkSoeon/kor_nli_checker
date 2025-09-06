@@ -40,8 +40,7 @@ def create_dual_adapters(base_model, lora_config):
     return adapter_a, adapter_b
 
 def format_input_prompt(premise, proposition, label):
-    prompt = """다음 전제와 가설의 관계를 바탕으로 아래의 형식에 따른 '함의 분석 설명문'을 생성하세요.
-    
+    prompt = """다음 [전제]와 [가설]의 [관계]를 바탕으로 아래의 형식에 따른 하나의 문장으로 이루워진 '함의 분석 설명문'을 생성하세요.
     [전제]: {premise}
     [가설]: {proposition}
     [관계]: {label}
