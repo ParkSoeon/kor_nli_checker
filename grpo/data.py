@@ -166,8 +166,7 @@ class GRPODataset(Dataset):
     2. 설명은 한 문장 이상, 세 문장 이하로 작성하고, 마지막에 전제와 가설의 관계가 함의 또는 모순임을 명확히 드러내야 합니다.
     - 예: '함의이다.', '함의에 해당된다.', '모순이다.', '모순에 속한다.' 등
     3. 전제와 가설의 관계는 무조건 '함의', '모순' 중 하나입니다. '중립'이나, '특정 관계에 해당되지 않는다.' 등의 표현은 허용되지 않습니다.
-    4. 설명문은 최대 길이 75토큰을 넘지 않도록 최대한 간결하고 명확하게 작성하세요.
-    5. 설명문은 한국어로 작성되어야 합니다.
+    4. 설명문은 최대한 간결하고 명확하게 한국어로 작성되어야 합니다.
 
 위의 규칙을 엄격히 준수하여 답변해 주세요."""
             messages = [
@@ -191,12 +190,19 @@ class GRPODataset(Dataset):
 
         else:
             formatted_prompt = base_prompt
+
+        reference = ""
+        if "output" in sample and "gold_reference" in sample["output"]:
+            reference = sample["output"]["gold_reference"]
+        elif "output" in sample and isinstance(sample["output"], str):
+            reference = sample["output"]
         
         return {
             'prompt': formatted_prompt,
             'premise': sample['input']["premise"],
             'proposition': sample['input']["proposition"], 
             'labels': sample['input']["label"],
-            'reference': sample.get("output", "")
+            # 'reference': sample.get("output", "")
+            'reference': reference
         }
 
