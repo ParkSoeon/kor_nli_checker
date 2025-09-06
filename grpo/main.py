@@ -65,6 +65,8 @@ def parse_args():
 
     parser.add_argument('--use_chat_template', action='store_true', help='Use chat template for input formatting')
 
+    parser.add_argument('--adapter_b_data', type=str, default=None, help='Path to data file with Adapter A candidates for Adapter B training')
+
     return parser.parse_args()
 
 def run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data):
@@ -121,11 +123,12 @@ def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
 
     return adapter_a_candidates, candidate_file
 
-def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates):
-    print_log("Running Adapter B in Experiment Mode")
+def run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data):
+    print_log("Running Adapter B with pre-generated Adapter A candidates")
     timestamp = get_timestamp()
 
-    # Load PPL model for Adapter B reward
+    train_data, adapter_a_candidates, reference_map = load_adapter_b_data(adapter_b_data_file)
+    
     ppl_model = None
     if args.ppl_model:
         print_log(f"Loading PPL model {args.ppl_model} for Adapter B reward")
@@ -148,7 +151,7 @@ def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, 
     os.makedirs(adapter_b_model_dir, exist_ok=True)
     adapter_b.save_pretrained(adapter_b_model_dir)
 
-    print_log(f"Adapter B Model and Candidates saved to {args.output_dir}")
+    print_log(f"Adapter B Model saved to {adapter_b_model_dir}")
     print_log("Adapter B Training Complete")
 
     if ppl_model:
@@ -257,7 +260,9 @@ def main():
 
             print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
             adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
-            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data)
+
+            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
 
         elif args.full_exp:
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
@@ -266,7 +271,7 @@ def main():
             clear_memory()
 
             adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
-            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data)
             
             combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
     
@@ -297,7 +302,7 @@ def main():
             clear_memory()
             adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
 
-            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data, adapter_a_candidates)
+            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data)
             clear_memory()
             adapter_b_candidates, _ = run_adapter_b_inference(args, adapter_b_dir, tokenizer, val_data)
 
