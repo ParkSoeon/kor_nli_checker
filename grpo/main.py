@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import gc
 from model import load_model_and_tokenizer, create_lora_config, create_dual_adapters, format_input_prompt
-from data import load_data, save_candidate_to_format, load_candidates_from_json, save_candidate_to_json, save_combined_cadidates
+from data import load_data, save_candidate_to_format, load_candidates_from_json, save_candidate_to_json, save_combined_cadidates, load_adapter_b_data
 from generator import generate_adapter_a_candidates, generate_adapter_b_candidates
 from train import train_adapter_a, train_adapter_b
 from datetime import datetime
@@ -65,7 +65,7 @@ def parse_args():
 
     parser.add_argument('--use_chat_template', action='store_true', help='Use chat template for input formatting')
 
-    parser.add_argument('--adapter_b_data', type=str, default=None, help='Path to data file with Adapter A candidates for Adapter B training')
+    # parser.add_argument('--adapter_b_data', type=str, default=None, help='Path to data file with Adapter A candidates for Adapter B training')
 
     return parser.parse_args()
 
@@ -123,11 +123,11 @@ def run_adapter_a_inference(args, adapter_a_path, tokenizer, data):
 
     return adapter_a_candidates, candidate_file
 
-def run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data):
+def run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data):
     print_log("Running Adapter B with pre-generated Adapter A candidates")
     timestamp = get_timestamp()
 
-    train_data, adapter_a_candidates, reference_map = load_adapter_b_data(adapter_b_data_file)
+    train_data, adapter_a_candidates, reference_map = load_adapter_b_data(train_data)
     
     ppl_model = None
     if args.ppl_model:
@@ -255,14 +255,14 @@ def main():
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
 
         elif args.adapter_b_only:
-            if not args.adapter_a_candidate_file or not os.path.exists(args.adapter_a_candidate_file):
-                raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
+            # if not args.adapter_a_candidate_file or not os.path.exists(args.adapter_a_candidate_file):
+            #     raise ValueError("Adapter A candidate file must be provided and exist for Adapter B only mode.")
 
-            print_log(f"Loading Adapter A candidates from {args.adapter_a_candidate_file}")
-            adapter_a_candidates = load_candidates_from_json(args.adapter_a_candidate_file)
-            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data)
+            print_log(f"Loading Adapter A candidates from {args.train_data}")
+            adapter_a_candidates = load_candidates_from_json(args.train_data)
+            adapter_b, adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data)
 
-            combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
+            # combine_candidates, combined_files = combine_candidates_for_reranking(adapter_a_candidates, {}, train_data, args.output_dir)
 
         elif args.full_exp:
             adapter_a, adapter_a_dir = run_adapter_a_experiment(args, base_model, tokenizer, train_data, val_data)
@@ -302,7 +302,7 @@ def main():
             clear_memory()
             adapter_a_candidates, _ = run_adapter_a_inference(args, adapter_a_dir, tokenizer, train_data)
 
-            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, adapter_b_data_file, val_data)
+            adapter_b_dir = run_adapter_b_experiment(args, base_model, tokenizer, train_data, val_data)
             clear_memory()
             adapter_b_candidates, _ = run_adapter_b_inference(args, adapter_b_dir, tokenizer, val_data)
 
